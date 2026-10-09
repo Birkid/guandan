@@ -1,25 +1,10 @@
-import { saveGameState, loadGameState, clearGameStorage, defaultRiichiSession, startingScoreForMode } from './store.js';
+import { saveGameState, loadGameState, clearGameStorage, DEFAULT_CARD_LAYOUT } from './store.js';
 import {
-    isRiichiMode,
-    playerCountForMode,
-    formatHandLabel,
-    advanceAfterWin,
-    advanceAfterRyukyoku,
-    notenPenaltyDeltas,
-    seatWindForSeat,
-    sanmaAbsentSeat,
-    RIICHI_DEPOSIT,
-} from './riichi/session.js';
-import {
-    computeRiichiSettlement,
-    SCORE_PRESETS,
-    buildWinSummary,
-    FU_STEPS,
-    FU_HINTS,
-    MAX_FAN,
-    MAX_YAKUMAN,
-    formatYakumanLabel,
-} from './riichi/settle.js';
+    pickDistinctZodiacs,
+    normalizeSeatZodiacs,
+    zodiacEmoji,
+    zodiacName,
+} from './zodiac.js';
 import {
     optimalScaleFromMax,
     findMaxScaleByProbe,
@@ -27,27 +12,6 @@ import {
     cardOffsetForScale,
     applyCardOffsets,
 } from './layout-scale.js';
-
-function formatScoreTierLabel(fan, fu, yakuman, rule = {}) {
-    if (yakuman) return formatYakumanLabel(fan);
-    if (fan >= 13) return '累计役满';
-    if (fan >= 11) return '三倍满';
-    if (fan >= 8) return '倍满';
-    if (fan >= 6) return '跳满';
-    if (fan >= 5) return '满贯';
-    if (fan <= 0) return '—';
-    const raw = fu * (1 << (2 + fan));
-    if (rule.kiriageMangan && raw === 1920) return '切上满贯';
-    return `${fan}番${fu}符`;
-}
-
-function isScorePresetActive(preset, current) {
-    return (
-        !!preset.yakuman === !!current.yakuman
-        && preset.fan === current.fan
-        && (preset.yakuman || preset.fu === current.fu)
-    );
-}
 
 const { createApp, ref, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
 
@@ -115,29 +79,10 @@ createApp({
         const history = ref([]);
         const lastDiff = ref({}); // { name: diff } for animation
 
-        // Riichi session
-        const gameMode = ref('generic');
-        const roundWind = ref(0);
-        const handNumber = ref(1);
-        const honba = ref(0);
-        const riichiSticks = ref(0);
-        const riichiRule = ref({ kiriageMangan: false, kazoeYakuman: true, renchanMode: 2 });
-        const initialDealerIndex = ref(0);
-        const playerRiichi = ref([false, false, false, false]);
-
-        // Riichi settle UI
-        const riichiSettle = ref({
-            open: false,
-            winType: 'tsumo',
-            winnerSeat: null,
-            payerSeat: null,
-            fan: 1,
-            fu: 30,
-            yakuman: false,
-            preview: null,
-            summary: '',
-        });
-        const ryukyokuNoten = ref([false, false, false, false]);
+        // 桌况 / 布局
+        const gameMode = ref('generic'); // 现仅保留通用模式（字段保留用于存档兼容）
+        const cardLayout = ref(DEFAULT_CARD_LAYOUT); // 玩家卡片布局：circles(四圆并列) | orbit(环绕)
+        const seatZodiacs = ref(normalizeSeatZodiacs(null, 4)); // 每个座位的生肖序号(0..11)
         
         // UI State
         const modals = ref({
@@ -150,8 +95,6 @@ createApp({
             dealerSet: false,
             originSet: false, // 设置原点模态框
             help: false, // 操作说明模态框
-            ryukyoku: false,
-            riichiSettle: false,
             matchEnd: false,
         });
         
@@ -481,55 +424,29 @@ createApp({
         // --- Computed ---
         const activePlayers = computed(() => seats.value.filter(n => n));
         const availablePlayers = computed(() => players.value.filter(p => !seats.value.includes(p.name)));
-        const seatPlayerCount = computed(() => playerCountForMode(gameMode.value));
-        const isRiichi = computed(() => isRiichiMode(gameMode.value));
-        const handLabel = computed(() => {
-            if (!isRiichi.value) return String(currentRound.value);
-            return formatHandLabel(roundWind.value, handNumber.value);
-        });
-        const gameModeLabel = computed(() => {
-            if (gameMode.value === 'riichi-4') return '立直四麻';
-            if (gameMode.value === 'sanma-3') return '三麻立直';
-            return '通用';
-        });
-        const visibleSeatIndices = computed(() => {
-            if (gameMode.value === 'sanma-3') return [0, 1, 2, 3];
-            const n = seatPlayerCount.value;
-            return Array.from({ length: n }, (_, i) => i);
-        });
-
-        const sanmaAbsentSeatIndex = computed(() => {
-            if (gameMode.value !== 'sanma-3') return null;
-            return sanmaAbsentSeat(seats.value);
-        });
-
-        const sanmaSeatedCount = computed(() =>
-            seats.value.filter(Boolean).length,
-        );
-
-        const isSanmaSeatLocked = (index) =>
-            gameMode.value === 'sanma-3'
-            && sanmaSeatedCount.value >= 3
-            && sanmaAbsentSeatIndex.value === index;
-
-        const compassLoopCount = computed(() =>
-            gameMode.value === 'sanma-3' ? 4 : seatPlayerCount.value,
-        );
-
+        const seatPlayerCount = computed(() => 4);
+        const gameModeLabel = computed(() => '通用');
+        const visibleSeatIndices = computed(() => Array.from({ length: seatPlayerCount.value }, (_, i) => i));
+        const handLabel = computed(() => String(currentRound.value));
+        const compassLoopCount = computed(() => seatPlayerCount.value);
         const displayPosForSeat = (seatIndex) => seatIndex;
-
-        const getSeatWind = (seatIndex) => {
-            if (!seats.value[seatIndex]) return '';
-            return seatWindForSeat(
-                seatIndex,
-                dealerIndex.value,
-                seatPlayerCount.value,
-                gameMode.value === 'sanma-3' ? sanmaAbsentSeatIndex.value : null,
-            );
-        };
-
         const COMPASS_NAMES = ['bottom', 'right', 'top', 'left'];
         const compassName = (compassPos) => COMPASS_NAMES[compassPos] ?? 'bottom';
+
+        // 生肖（四圆并列布局）
+        const seatZodiac = (index) => seatZodiacs.value[index] ?? index;
+        const seatZodiacEmoji = (index) => zodiacEmoji(seatZodiac(index));
+        const seatZodiacName = (index) => zodiacName(seatZodiac(index));
+        const reshuffleSeatZodiacs = () => {
+            seatZodiacs.value = pickDistinctZodiacs(4);
+            saveState();
+        };
+        const setCardLayout = (layout) => {
+            if (layout !== 'circles' && layout !== 'orbit') return;
+            if (layout === cardLayout.value) return;
+            cardLayout.value = layout;
+            saveState();
+        };
 
         const seatIndexFromCard = (cardEl) => {
             if (!cardEl) return null;
@@ -539,64 +456,6 @@ createApp({
             return Number.isNaN(idx) ? null : idx;
         };
 
-        const applyRoundAdvance = (advance) => {
-            dealerIndex.value = advance.dealerIndex;
-            if (advance.dealerStreakDelta === 1) {
-                dealerStreak.value++;
-            } else {
-                dealerStreak.value = 0;
-            }
-            honba.value = advance.honba;
-            roundWind.value = advance.roundWind;
-            handNumber.value = advance.handNumber;
-            currentRound.value++;
-            playerRiichi.value = [false, false, false, false];
-        };
-
-        const updateRiichiPreview = () => {
-            if (!riichiSettle.value.open || riichiSettle.value.winnerSeat == null) {
-                riichiSettle.value.preview = null;
-                return;
-            }
-            if (riichiSettle.value.yakuman && riichiSettle.value.fan < 1) return;
-            try {
-                const absentSeat = gameMode.value === 'sanma-3' ? sanmaAbsentSeatIndex.value : null;
-                if (gameMode.value === 'sanma-3' && absentSeat == null) {
-                    riichiSettle.value.preview = null;
-                    return;
-                }
-                const result = computeRiichiSettlement({
-                    gameMode: gameMode.value,
-                    winnerSeat: riichiSettle.value.winnerSeat,
-                    payerSeat: riichiSettle.value.winType === 'ron' ? riichiSettle.value.payerSeat : null,
-                    dealerIndex: dealerIndex.value,
-                    fan: riichiSettle.value.yakuman ? riichiSettle.value.fan : riichiSettle.value.fan,
-                    fu: riichiSettle.value.fu,
-                    yakuman: riichiSettle.value.yakuman,
-                    honba: honba.value,
-                    riichiSticks: riichiSticks.value,
-                    rule: riichiRule.value,
-                    absentSeat,
-                });
-                riichiSettle.value.preview = result;
-            } catch {
-                riichiSettle.value.preview = null;
-            }
-        };
-
-        watch(
-            () => [
-                riichiSettle.value.fan,
-                riichiSettle.value.fu,
-                riichiSettle.value.yakuman,
-                riichiSettle.value.open,
-                honba.value,
-                riichiSticks.value,
-                riichiRule.value.kiriageMangan,
-            ],
-            updateRiichiPreview,
-        );
-        
         // Track rotation for smooth counter-clockwise animation
         // 目标角度映射：座位0=0°, 座位1=-90°, 座位2=-180°, 座位3=-270°
         // 使用函数来延迟初始化，确保能获取到正确的初始dealerIndex
@@ -604,7 +463,7 @@ createApp({
         let previousDealerIndex = null;
         
         const dialRotation = computed(() => {
-            if (isRiichi.value) return 0;
+            if (cardLayout.value === 'circles') return 0;
             const targetIndex = dealerIndex.value;
             
             // 首次初始化：直接设置到正确位置，不需要动画
@@ -641,7 +500,7 @@ createApp({
             nextTick(() => updateCardPositionOffsets(newScale));
         });
 
-        watch([gameMode, isRiichi], () => {
+        watch([gameMode, cardLayout], () => {
             invalidateLayoutMaxScale();
             nextTick(() => {
                 if (scaleAutoFit.value) fitLayoutToScreen();
@@ -714,14 +573,8 @@ createApp({
                 dealerStreak: dealerStreak.value,
                 history: history.value,
                 gameMode: gameMode.value,
-                roundWind: roundWind.value,
-                handNumber: handNumber.value,
-                honba: honba.value,
-                riichiSticks: riichiSticks.value,
-                startingScore: gameMode.value === 'sanma-3' ? 35000 : (gameMode.value === 'riichi-4' ? 25000 : 0),
-                rule: riichiRule.value,
-                initialDealerIndex: initialDealerIndex.value,
-                playerRiichi: playerRiichi.value,
+                cardLayout: cardLayout.value,
+                seatZodiacs: seatZodiacs.value,
             };
             saveGameState(state);
         };
@@ -738,14 +591,9 @@ createApp({
                 dealerIndex.value = data.dealerIndex || 0;
                 dealerStreak.value = data.dealerStreak || 0;
                 history.value = data.history || [];
-                gameMode.value = data.gameMode || 'generic';
-                roundWind.value = data.roundWind ?? 0;
-                handNumber.value = data.handNumber ?? 1;
-                honba.value = data.honba ?? 0;
-                riichiSticks.value = data.riichiSticks ?? 0;
-                riichiRule.value = data.rule || { kiriageMangan: false, kazoeYakuman: true, renchanMode: 2 };
-                initialDealerIndex.value = data.initialDealerIndex ?? data.dealerIndex ?? 0;
-                playerRiichi.value = data.playerRiichi || [false, false, false, false];
+                gameMode.value = 'generic';
+                cardLayout.value = data.cardLayout === 'orbit' ? 'orbit' : DEFAULT_CARD_LAYOUT;
+                seatZodiacs.value = normalizeSeatZodiacs(data.seatZodiacs, 4);
             }
         };
 
@@ -765,463 +613,27 @@ createApp({
 
         const handlePlayerCardClick = (index) => {
             if (dragState.value.dragging) return;
-            if (!isRiichi.value || !seats.value[index]) {
-                handleSeatClick(index);
-                return;
-            }
-            if (isLocked.value) return;
-            openRiichiSettle('tsumo', index, null);
+            handleSeatClick(index);
         };
 
         const handleSeatClick = (index) => {
             if (dragState.value.dragging) return;
-            if (isSanmaSeatLocked(index)) return;
             activeSeatIndex.value = index;
             modals.value.seat = true;
         };
 
-        const toggleRiichiStick = (seatIndex, event) => {
-            event?.stopPropagation();
-            if (!isRiichi.value || isLocked.value || !seats.value[seatIndex]) return;
-            const name = seats.value[seatIndex];
-            const p = players.value.find(pl => pl.name === name);
-            if (!p) return;
-
-            if (playerRiichi.value[seatIndex]) {
-                p.score += RIICHI_DEPOSIT;
-                playerRiichi.value[seatIndex] = false;
-                riichiSticks.value = Math.max(0, riichiSticks.value - 1);
-                history.value.unshift({
-                    time: Date.now(),
-                    round: currentRound.value,
-                    handLabel: handLabel.value,
-                    dealerIndex: dealerIndex.value,
-                    type: 'riichi-undeclare',
-                    seatIndex,
-                    playerName: name,
-                    amount: RIICHI_DEPOSIT,
-                    transactions: [],
-                });
-            } else {
-                if (getPlayerScore(name) < RIICHI_DEPOSIT) return;
-                p.score -= RIICHI_DEPOSIT;
-                playerRiichi.value[seatIndex] = true;
-                riichiSticks.value++;
-                history.value.unshift({
-                    time: Date.now(),
-                    round: currentRound.value,
-                    handLabel: handLabel.value,
-                    dealerIndex: dealerIndex.value,
-                    type: 'riichi-declare',
-                    seatIndex,
-                    playerName: name,
-                    amount: RIICHI_DEPOSIT,
-                    transactions: [],
-                });
-            }
-            saveState();
-        };
-
-        const settleRemainingRiichiSticksToDealer = () => {
-            if (riichiSticks.value <= 0) return 0;
-            const amount = riichiSticks.value * RIICHI_DEPOSIT;
-            const dealerName = seats.value[dealerIndex.value];
-            if (!dealerName) return 0;
-            const p = players.value.find(pl => pl.name === dealerName);
-            if (p) p.score += amount;
-            const sticks = riichiSticks.value;
-            riichiSticks.value = 0;
-            return sticks;
-        };
-
-        const endRiichiMatch = () => {
-            if (!isRiichi.value) return;
-            const sticks = settleRemainingRiichiSticksToDealer();
-            if (sticks > 0) {
-                history.value.unshift({
-                    time: Date.now(),
-                    round: currentRound.value,
-                    handLabel: handLabel.value,
-                    type: 'match-end-sticks',
-                    dealerIndex: dealerIndex.value,
-                    sticks,
-                    transactions: [],
-                });
-            }
-
-            const loopCount = compassLoopCount.value;
-            const entries = [];
-            for (let i = 0; i < loopCount; i++) {
-                const name = seats.value[i];
-                if (!name) continue;
-                entries.push({
-                    name,
-                    score: getPlayerScore(name),
-                    wind: getSeatWind(i),
-                    seatIndex: i,
-                });
-            }
-            entries.sort((a, b) => b.score - a.score);
-            matchEndRankings.value = entries.map((entry, index) => ({
-                ...entry,
-                rank: index + 1,
-            }));
-            matchEndSticksNote.value = sticks > 0
-                ? `桌上 ${sticks} 根供托（${sticks * RIICHI_DEPOSIT} 点）已归当前庄家 ${seats.value[dealerIndex.value] ?? ''}。`
-                : '';
-            modals.value.matchEnd = true;
-            saveState();
-        };
-
-        const openRiichiSettle = (winType, winnerSeat, payerSeat) => {
-            const session = {
-                gameMode: gameMode.value,
-                roundWind: roundWind.value,
-                handNumber: handNumber.value,
-                honba: honba.value,
-                riichiSticks: riichiSticks.value,
-            };
-            const { detail } = buildWinSummary(
-                session,
-                winnerSeat,
-                dealerIndex.value,
-                seats.value,
-                winType === 'tsumo',
-                payerSeat,
-            );
-            riichiSettle.value = {
-                open: true,
-                winType,
-                winnerSeat,
-                payerSeat,
-                fan: 1,
-                fu: 30,
-                yakuman: false,
-                preview: null,
-                summary: detail,
-            };
-            modals.value.riichiSettle = true;
-            nextTick(updateRiichiPreview);
-        };
-
-        const closeRiichiSettle = () => {
-            modals.value.riichiSettle = false;
-            riichiSettle.value.open = false;
-        };
-
-        const applyScorePreset = (preset) => {
-            riichiSettle.value.fan = preset.fan;
-            riichiSettle.value.fu = preset.fu;
-            riichiSettle.value.yakuman = !!preset.yakuman;
-            updateRiichiPreview();
-        };
-
-        const adjustRiichiFan = (delta) => {
-            const rs = riichiSettle.value;
-            if (delta > 0) {
-                if (rs.yakuman) {
-                    if (rs.fan < MAX_YAKUMAN) rs.fan += 1;
-                } else if (rs.fan >= MAX_FAN) {
-                    rs.yakuman = true;
-                    rs.fan = 1;
-                } else {
-                    rs.fan += 1;
-                }
-            } else if (rs.yakuman) {
-                if (rs.fan <= 1) {
-                    rs.yakuman = false;
-                    rs.fan = MAX_FAN;
-                } else {
-                    rs.fan -= 1;
-                }
-            } else {
-                rs.fan = Math.max(0, rs.fan - 1);
-            }
-            updateRiichiPreview();
-        };
-
-        const stepRiichiFu = (delta) => {
-            let idx = FU_STEPS.indexOf(riichiSettle.value.fu);
-            if (idx === -1) {
-                idx = FU_STEPS.findIndex((s) => s >= riichiSettle.value.fu);
-                if (idx === -1) idx = FU_STEPS.length - 1;
-            }
-            idx = Math.max(0, Math.min(FU_STEPS.length - 1, idx + delta));
-            riichiSettle.value.fu = FU_STEPS[idx];
-            updateRiichiPreview();
-        };
-
-        const setRiichiFu = (fu) => {
-            riichiSettle.value.fu = fu;
-            updateRiichiPreview();
-        };
-
-        const riichiScoreTierLabel = computed(() => {
-            const rs = riichiSettle.value;
-            return formatScoreTierLabel(rs.fan, rs.fu, rs.yakuman, riichiRule.value);
-        });
-
-        const isRiichiPresetActive = (preset) =>
-            isScorePresetActive(preset, riichiSettle.value);
-
-        const confirmRiichiSettle = () => {
-            const rs = riichiSettle.value;
-            if (rs.winnerSeat == null) return;
-            const absentSeat = gameMode.value === 'sanma-3' ? sanmaAbsentSeatIndex.value : null;
-            if (gameMode.value === 'sanma-3' && absentSeat == null) {
-                alert('三麻需坐满 3 人才能结算');
-                return;
-            }
-            let result;
-            try {
-                result = computeRiichiSettlement({
-                    gameMode: gameMode.value,
-                    winnerSeat: rs.winnerSeat,
-                    payerSeat: rs.winType === 'ron' ? rs.payerSeat : null,
-                    dealerIndex: dealerIndex.value,
-                    fan: rs.yakuman ? rs.fan : rs.fan,
-                    fu: rs.fu,
-                    yakuman: rs.yakuman,
-                    honba: honba.value,
-                    riichiSticks: riichiSticks.value,
-                    rule: riichiRule.value,
-                    absentSeat,
-                });
-            } catch (e) {
-                alert(e.message || '算点失败');
-                return;
-            }
-
-            const loopCount = compassLoopCount.value;
-            const deltas = result.physicalDeltas;
-            const diffByName = {};
-            const transactions = buildPairwiseFromDeltas(deltas, seats.value, loopCount);
-
-            for (let i = 0; i < loopCount; i++) {
-                const name = seats.value[i];
-                if (!name || deltas[i] === 0) continue;
-                const p = players.value.find(pl => pl.name === name);
-                if (p) p.score += deltas[i];
-                diffByName[name] = deltas[i];
-            }
-
-            const snapshotHonba = honba.value;
-            const snapshotSticks = riichiSticks.value;
-            const snapshotDealer = dealerIndex.value;
-            const snapshotStreak = dealerStreak.value;
-            const snapshotRoundWind = roundWind.value;
-            const snapshotHand = handNumber.value;
-
-            history.value.unshift({
-                time: Date.now(),
-                round: currentRound.value,
-                handLabel: handLabel.value,
-                dealerIndex: dealerIndex.value,
-                type: 'riichi-win',
-                winType: rs.winType,
-                winnerSeat: rs.winnerSeat,
-                payerSeat: rs.payerSeat,
-                fan: rs.yakuman ? undefined : rs.fan,
-                fu: rs.fu,
-                yakuman: rs.yakuman,
-                yakumanLevel: rs.yakuman ? rs.fan : undefined,
-                fenpei: [...deltas],
-                transactions,
-                sessionBefore: {
-                    honba: snapshotHonba,
-                    riichiSticks: snapshotSticks,
-                    dealerIndex: snapshotDealer,
-                    dealerStreak: snapshotStreak,
-                    roundWind: snapshotRoundWind,
-                    handNumber: snapshotHand,
-                    playerRiichi: [...playerRiichi.value],
-                },
-            });
-
-            lastDiff.value = diffByName;
-            setTimeout(() => { lastDiff.value = {}; }, 3000);
-
-            riichiSticks.value = 0;
-            const advance = advanceAfterWin({
-                gameMode: gameMode.value,
-                winnerSeat: rs.winnerSeat,
-                dealerIndex: dealerIndex.value,
-                honba: honba.value,
-                roundWind: roundWind.value,
-                handNumber: handNumber.value,
-                renchanMode: riichiRule.value.renchanMode ?? 2,
-                absentSeat,
-            });
-
-            applyRoundAdvance(advance);
-            closeRiichiSettle();
-            saveState();
-        };
-
-        const buildPairwiseFromDeltas = (deltas, seatNames, loopCount) => {
-            const txs = [];
-            let winnerIdx = -1;
-            for (let i = 0; i < loopCount; i++) {
-                if ((deltas[i] ?? 0) > 0) winnerIdx = i;
-            }
-            if (winnerIdx < 0) return txs;
-            const winnerName = seatNames[winnerIdx];
-            for (let i = 0; i < loopCount; i++) {
-                if (i === winnerIdx) continue;
-                const loss = -(deltas[i] ?? 0);
-                if (loss > 0 && seatNames[i]) {
-                    txs.push({ from: seatNames[i], to: winnerName, amount: loss });
-                }
-            }
-            return txs;
-        };
-
-        const setGameMode = (mode) => {
-            if (mode === gameMode.value) return;
-            const hasData = history.value.length > 0 || activePlayers.value.length > 0;
-            if (hasData && !confirm('切换模式可能影响场况显示，是否继续？')) return;
-            gameMode.value = mode;
-            if (isRiichiMode(mode)) {
-                const defaults = defaultRiichiSession(mode);
-                roundWind.value = defaults.roundWind;
-                handNumber.value = defaults.handNumber;
-                honba.value = defaults.honba;
-                riichiSticks.value = defaults.riichiSticks;
-                riichiRule.value = { ...defaults.rule };
-                initialDealerIndex.value = dealerIndex.value;
-                playerRiichi.value = [false, false, false, false];
-                players.value.forEach(p => {
-                    p.origin = defaults.startingScore;
-                });
-            }
-            saveState();
-        };
-
-        const openRyukyoku = () => {
-            if (!isRiichi.value) return;
-            ryukyokuNoten.value = Array.from({ length: 4 }, () => false);
-            modals.value.ryukyoku = true;
-        };
-
-        const setRyukyokuTenpai = (seatIndex, tenpai) => {
-            ryukyokuNoten.value[seatIndex] = !tenpai;
-        };
-
-        const setAllRyukyokuTenpai = (tenpai) => {
-            const loopCount = compassLoopCount.value;
-            for (let i = 0; i < loopCount; i++) {
-                if (seats.value[i]) ryukyokuNoten.value[i] = !tenpai;
-            }
-        };
-
-        const ryukyokuPreviewDeltas = computed(() => {
-            if (!modals.value.ryukyoku) return null;
-            const pc = seatPlayerCount.value;
-            const absentSeat = gameMode.value === 'sanma-3' ? sanmaAbsentSeatIndex.value : null;
-            return notenPenaltyDeltas(
-                pc,
-                dealerIndex.value,
-                ryukyokuNoten.value,
-                absentSeat,
-            );
-        });
-
-        const ryukyokuHasPenalty = computed(() => {
-            const deltas = ryukyokuPreviewDeltas.value;
-            return deltas != null && deltas.some((d) => d !== 0);
-        });
-
-        const ryukyokuDealerTenpai = computed(() => !ryukyokuNoten.value[dealerIndex.value]);
-
-        const confirmRyukyoku = () => {
-            const pc = seatPlayerCount.value;
-            const loopCount = compassLoopCount.value;
-            const absentSeat = gameMode.value === 'sanma-3' ? sanmaAbsentSeatIndex.value : null;
-            if (gameMode.value === 'sanma-3' && absentSeat == null) {
-                alert('三麻需坐满 3 人才能流局');
-                return;
-            }
-            const snapshotHonba = honba.value;
-            const snapshotSticks = riichiSticks.value;
-            const snapshotDealer = dealerIndex.value;
-            const snapshotStreak = dealerStreak.value;
-            const snapshotRoundWind = roundWind.value;
-            const snapshotHand = handNumber.value;
-
-            const deltas = notenPenaltyDeltas(
-                pc,
-                dealerIndex.value,
-                ryukyokuNoten.value,
-                absentSeat,
-            );
-            const diffByName = {};
-            const transactions = buildPairwiseFromDeltas(deltas, seats.value, loopCount);
-
-            for (let i = 0; i < loopCount; i++) {
-                const name = seats.value[i];
-                if (!name || deltas[i] === 0) continue;
-                const p = players.value.find(pl => pl.name === name);
-                if (p) p.score += deltas[i];
-                diffByName[name] = deltas[i];
-            }
-
-            const adv = advanceAfterRyukyoku({
-                gameMode: gameMode.value,
-                dealerIndex: dealerIndex.value,
-                roundWind: roundWind.value,
-                handNumber: handNumber.value,
-                honba: honba.value,
-                dealerTenpai: !ryukyokuNoten.value[dealerIndex.value],
-                renchanMode: riichiRule.value.renchanMode ?? 2,
-                absentSeat,
-            });
-
-            history.value.unshift({
-                time: Date.now(),
-                round: currentRound.value,
-                handLabel: handLabel.value,
-                dealerIndex: dealerIndex.value,
-                type: 'ryukyoku',
-                noten: ryukyokuNoten.value.slice(0, loopCount),
-                dealerTenpai: !ryukyokuNoten.value[dealerIndex.value],
-                fenpei: deltas,
-                transactions,
-                sessionBefore: {
-                    honba: snapshotHonba,
-                    riichiSticks: snapshotSticks,
-                    dealerIndex: snapshotDealer,
-                    dealerStreak: snapshotStreak,
-                    roundWind: snapshotRoundWind,
-                    handNumber: snapshotHand,
-                    playerRiichi: [...playerRiichi.value],
-                },
-            });
-
-            lastDiff.value = diffByName;
-            setTimeout(() => { lastDiff.value = {}; }, 3000);
-            modals.value.ryukyoku = false;
-            applyRoundAdvance(adv);
-            saveState();
-        };
 
         const addNewPlayer = () => {
             const name = newPlayerName.value.trim();
             if (!name) return;
             if (players.value.some(p => p.name === name)) return alert('玩家已存在');
-            const origin = isRiichiMode(gameMode.value)
-                ? startingScoreForMode(gameMode.value)
-                : 0;
-            players.value.push({ name, score: 0, origin });
+            players.value.push({ name, score: 0, origin: 0 });
             newPlayerName.value = '';
             saveState();
         };
 
         const sitDown = (name) => {
             seats.value[activeSeatIndex.value] = name;
-            const p = players.value.find(pl => pl.name === name);
-            if (p && isRiichi.value && !p.origin) {
-                p.origin = startingScoreForMode(gameMode.value);
-            }
             closeModal('seat');
             saveState();
         };
@@ -1360,41 +772,8 @@ createApp({
             if (!confirm('确定撤销上一次结算？')) return;
 
             const last = history.value.shift();
-            const pc = seatPlayerCount.value;
 
-            if (last.type === 'riichi-declare') {
-                const name = last.playerName;
-                const p = players.value.find(pl => pl.name === name);
-                if (p) p.score += last.amount;
-                playerRiichi.value[last.seatIndex] = false;
-                riichiSticks.value = Math.max(0, riichiSticks.value - 1);
-            } else if (last.type === 'riichi-undeclare') {
-                const name = last.playerName;
-                const p = players.value.find(pl => pl.name === name);
-                if (p) p.score -= last.amount;
-                playerRiichi.value[last.seatIndex] = true;
-                riichiSticks.value++;
-            } else if (last.fenpei && (last.type === 'riichi-win' || last.type === 'ryukyoku')) {
-                const loopCount = compassLoopCount.value;
-                for (let i = 0; i < loopCount; i++) {
-                    const name = seats.value[i];
-                    if (!name) continue;
-                    const p = players.value.find(pl => pl.name === name);
-                    if (p) p.score -= last.fenpei[i] ?? 0;
-                }
-                if (last.sessionBefore) {
-                    honba.value = last.sessionBefore.honba;
-                    riichiSticks.value = last.sessionBefore.riichiSticks;
-                    dealerIndex.value = last.sessionBefore.dealerIndex;
-                    dealerStreak.value = last.sessionBefore.dealerStreak;
-                    roundWind.value = last.sessionBefore.roundWind;
-                    handNumber.value = last.sessionBefore.handNumber;
-                    if (last.sessionBefore.playerRiichi) {
-                        playerRiichi.value = [...last.sessionBefore.playerRiichi];
-                    }
-                    currentRound.value = Math.max(1, currentRound.value - 1);
-                }
-            } else if (last.transactions) {
+            if (last.transactions) {
                 last.transactions.forEach(t => {
                     const fromP = players.value.find(p => p.name === t.from);
                     const toP = players.value.find(p => p.name === t.to);
@@ -1445,9 +824,6 @@ createApp({
                     // 至少有一个玩家没有入座：只指定庄家位置，不增加局数
                     dealerIndex.value = targetIndex;
                     dealerStreak.value = 0;
-                    if (gameMode.value === 'sanma-3') {
-                        initialDealerIndex.value = targetIndex;
-                    }
                     saveState();
                 } else {
                     const seat = seats.value[targetIndex];
@@ -1547,9 +923,6 @@ createApp({
                     // 至少有一个玩家没有入座：只指定庄家位置，不增加局数
                     dealerIndex.value = targetIndex;
                     dealerStreak.value = 0;
-                    if (gameMode.value === 'sanma-3') {
-                        initialDealerIndex.value = targetIndex;
-                    }
                     saveState();
                 } else {
                     const seat = seats.value[targetIndex];
@@ -1888,24 +1261,12 @@ createApp({
                     openQuickSettle(fromSeat, toSeat);
                 }
             } else {
-                const tapIndex = fromIndex;
                 handleDragEnd();
-                if (tapIndex != null && seats.value[tapIndex] && isRiichi.value && !isLocked.value) {
-                    openRiichiSettle('tsumo', tapIndex, null);
-                }
             }
         };
 
         // Quick Settle Modal
         const openQuickSettle = (from, to) => {
-            if (isRiichi.value) {
-                const fromIndex = seats.value.indexOf(from);
-                const toIndex = seats.value.indexOf(to);
-                if (fromIndex >= 0 && toIndex >= 0) {
-                    openRiichiSettle('ron', toIndex, fromIndex);
-                }
-                return;
-            }
             settleFrom.value = from;
             settleTo.value = to;
             settleAmount.value = '';
@@ -1930,28 +1291,10 @@ createApp({
             const pc = seatPlayerCount.value;
             dealerIndex.value = (dealerIndex.value + 1) % pc;
             dealerStreak.value = 0;
-            if (isRiichi.value) {
-                let hn = handNumber.value + 1;
-                let rw = roundWind.value;
-                if (hn > 4) {
-                    hn = 1;
-                    rw = (rw + 1) % 4;
-                }
-                handNumber.value = hn;
-                roundWind.value = rw;
-                honba.value = 0;
-            }
             currentRound.value++;
             saveState();
         };
         
-        const nextRoundCheck = () => {
-            // 已废弃，保留兼容
-        };
-
-        const nextRound = (changeDealer) => {
-            // 已废弃，保留兼容
-        };
 
         // Settings & Utils
         const closeModal = (name) => modals.value[name] = false;
@@ -2215,7 +1558,7 @@ createApp({
             // 遍历每一条记录，更新当前分数，并更新对应局数的快照
             // 注意：如果同一局有多条记录，后面的会覆盖前面的快照，这是正确的，因为我们要的是"该局结束时的状态"
             sortedHistory.forEach(h => {
-                h.transactions.forEach(t => {
+                (h.transactions || []).forEach(t => {
                     if (currentScores[t.from] !== undefined) currentScores[t.from] -= t.amount;
                     if (currentScores[t.to] !== undefined) currentScores[t.to] += t.amount;
                 });
@@ -2319,26 +1662,20 @@ createApp({
             isDark, toggleTheme,
             isLocked, toggleLock,
             seats, players, currentRound, dealerIndex, dealerStreak, history, lastDiff,
-            gameMode, gameModeLabel, isRiichi, handLabel, honba, riichiSticks, riichiRule,
-            visibleSeatIndices, seatPlayerCount, playerRiichi,
-            sanmaAbsentSeatIndex, sanmaSeatedCount, isSanmaSeatLocked, compassLoopCount,
-            displayPosForSeat, getSeatWind, compassName,
+            gameMode, gameModeLabel, handLabel,
+            cardLayout, setCardLayout,
+            seatZodiacs, seatZodiacEmoji, seatZodiacName, reshuffleSeatZodiacs,
+            visibleSeatIndices, seatPlayerCount,
+            compassLoopCount, displayPosForSeat, compassName,
             modals, closeModal,
             activePlayers, availablePlayers, dialRotation,
             getPlayerScore, getPlayerCurrentScore, handleSeatClick, handlePlayerCardClick,
             addNewPlayer, sitDown, newPlayerName,
             openSettleModal, settleFrom, settleTo, settleAmount, selectingFrom, isSelecting, errorFrom, errorTo, selectSettlePlayer, confirmSettle, amountInput, handleSelectBoxClick,
             appendNumber, backspaceNumber,
-            undo, handleNextRoundClick, nextRoundCheck, nextRound,
-            formatTime, clearData, setGameMode,
-            openRyukyoku, setRyukyokuTenpai, setAllRyukyokuTenpai, confirmRyukyoku,
-            ryukyokuNoten, ryukyokuDealerTenpai, ryukyokuPreviewDeltas, ryukyokuHasPenalty,
-            toggleRiichiStick, endRiichiMatch, RIICHI_DEPOSIT,
+            undo, handleNextRoundClick,
+            formatTime, clearData,
             matchEndRankings, matchEndSticksNote,
-            riichiSettle, SCORE_PRESETS, FU_HINTS, formatYakumanLabel,
-            applyScorePreset, adjustRiichiFan, stepRiichiFu, setRiichiFu,
-            riichiScoreTierLabel, isRiichiPresetActive,
-            confirmRiichiSettle, closeRiichiSettle, updateRiichiPreview,
             showStats, showHistory: () => modals.value.history = true, showSettings: () => modals.value.settings = true, showRoundModal: () => {},
             showHelp: () => modals.value.help = true,
             showOriginSet, updateOrigin, setOriginToZero, standUp,
@@ -2351,7 +1688,7 @@ createApp({
             // Drag and Drop (Next Round Button)
             handleNextRoundDragStart, handleNextRoundDragEnd,
             handleNextRoundTouchStart, handleNextRoundTouchMove, handleNextRoundTouchEnd,
-            
+
             // Dice
             diceMode, isRolling, hasRolled, diceStyles, handleDialClick, closeDiceMode,
 

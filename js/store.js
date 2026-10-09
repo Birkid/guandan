@@ -1,45 +1,35 @@
-/** @typedef {'generic' | 'riichi-4' | 'sanma-3'} GameMode */
+/** @typedef {'generic'} GameMode */
+/** @typedef {'circles' | 'orbit'} CardLayout */
 
 const STORAGE_KEY_V4 = 'mj_data_v4';
 const STORAGE_KEY_V3 = 'mj_data_v3';
 
-export function startingScoreForMode(gameMode) {
-  if (gameMode === 'sanma-3') return 35000;
-  if (gameMode === 'riichi-4') return 25000;
-  return 0;
-}
+/** 玩家卡片默认布局：四圆并列 */
+export const DEFAULT_CARD_LAYOUT = 'circles';
 
-/** @returns {import('./riichi/session.js').RiichiSessionDefaults} */
-export function defaultRiichiSession(gameMode = 'riichi-4') {
-  return {
-    gameMode,
-    roundWind: 0,
-    handNumber: 1,
-    honba: 0,
-    riichiSticks: 0,
-    startingScore: startingScoreForMode(gameMode),
-    rule: { kiriageMangan: false, kazoeYakuman: true, renchanMode: 2 },
-    initialDealerIndex: 0,
-    playerRiichi: [false, false, false, false],
-  };
-}
+/** 卡片布局可选项 */
+export const CARD_LAYOUTS = ['circles', 'orbit'];
 
 /**
+ * 归一化任意历史数据到当前结构。
+ * 旧版本里的立直/三麻/掼蛋模式字段一律丢弃，统一回到通用模式。
  * @param {Record<string, unknown>} raw
  * @returns {Record<string, unknown>}
  */
 export function migrateV3ToV4(raw) {
+  const seats = Array.isArray(raw.seats) && raw.seats.length === 4
+    ? raw.seats
+    : [null, null, null, null];
   return {
-    ...raw,
-    gameMode: raw.gameMode ?? 'generic',
-    roundWind: raw.roundWind ?? 0,
-    handNumber: raw.handNumber ?? 1,
-    honba: raw.honba ?? 0,
-    riichiSticks: raw.riichiSticks ?? 0,
-    startingScore: raw.startingScore ?? 25000,
-    rule: raw.rule ?? { kiriageMangan: false, kazoeYakuman: true, renchanMode: 2 },
-    initialDealerIndex: raw.initialDealerIndex ?? raw.dealerIndex ?? 0,
-    playerRiichi: raw.playerRiichi ?? [false, false, false, false],
+    players: Array.isArray(raw.players) ? raw.players : [],
+    seats,
+    currentRound: raw.currentRound ?? 1,
+    dealerIndex: raw.dealerIndex ?? 0,
+    dealerStreak: raw.dealerStreak ?? 0,
+    history: Array.isArray(raw.history) ? raw.history : [],
+    gameMode: 'generic',
+    cardLayout: raw.cardLayout === 'orbit' ? 'orbit' : DEFAULT_CARD_LAYOUT,
+    seatZodiacs: Array.isArray(raw.seatZodiacs) ? raw.seatZodiacs : null,
   };
 }
 

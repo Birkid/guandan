@@ -1741,6 +1741,62 @@ body.dark .rank-line-champion {
 .history-sub { color: var(--text-secondary); margin-bottom: 4px; }
 .history-arrow { font-size: 10px; color: var(--text-muted); }
 
-.mode-sanma .center-dial .dir-3 {
-    display: none;
+/* ================= 四圆并列布局 & 生肖 ================= */
+/* 生肖图标（两种布局通用） */
+.card-zodiac {
+    font-size: 26px;
+    line-height: 1;
+    margin-bottom: 2px;
+    filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.12));
+    user-select: none;
+    pointer-events: none;
 }
+.card-zodiac-empty { opacity: 0.28; filter: none; }
+
+/* 四圆布局：一行四个圆 */
+.game-area.layout-circles {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: center;
+    gap: 26px;
+}
+.game-area.layout-circles .center-dial {
+    top: 8px;
+    left: 50%;
+    margin-left: -46px;
+    width: 92px;
+    height: 92px;
+    border-width: 3px;
+}
+.game-area.layout-circles .center-dial .direction { display: none; }
+.game-area.layout-circles .center-dial .dial-round { font-size: 26px; }
+.game-area.layout-circles .center-dial:not(.dice-mode) { transform: scale(1) !important; }
+.game-area.layout-circles .center-dial.dice-mode {
+    top: 50%;
+    margin-top: -46px;
+}
+.layout-circles .player-card {
+    position: relative;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    left: auto;
+    flex: 0 0 auto;
+    width: min(150px, 21vw);
+    height: min(150px, 21vw);
+    padding: 0;
+    border-radius: 50%;
+    justify-content: center;
+    gap: 2px;
+    transform: scale(var(--scale-factor, 1)) !important;
+}
+.layout-circles .player-card.dragging,
+.layout-circles .player-card.drag-over {
+    transform: scale(calc(var(--scale-factor, 1) * 1.06)) !important;
+}
+.layout-circles .player-card .card-zodiac { font-size: 42px; margin-bottom: 4px; }
+.layout-circles .player-card .player-name { font-size: 13px; margin-bottom: 0; }
+.layout-circles .player-card .player-score { font-size: 24px; line-height: 1.1; }
+.layout-circles .player-card.empty-seat .empty-seat-hint i { font-size: 18px; margin-bottom: 2px; }
+.layout-circles .player-card.empty-seat .card-zodiac { font-size: 34px; }
