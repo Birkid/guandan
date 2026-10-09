@@ -229,9 +229,6 @@
                 <button class="icon-btn lock-btn" @click="toggleLock" :data-tooltip="isLocked ? '解锁' : '锁定'">
                     <i class="fas" :class="isLocked ? 'fa-lock' : 'fa-lock-open'"></i>
                 </button>
-                <button class="icon-btn" @click="showHelp" :style="{ pointerEvents: isLocked ? 'none' : 'auto' }" data-tooltip="操作说明">
-                    <i class="fas fa-question-circle"></i>
-                </button>
                 <button v-if="roomEnabled" class="icon-btn room-btn" @click="openLobby"
                         :style="{ pointerEvents: isLocked ? 'none' : 'auto' }"
                         :data-tooltip="inRoom ? ('房间 ' + room.id) : '联机房间'">
@@ -560,6 +557,9 @@
 
                 <div class="list-item" @click="showOriginSet" style="cursor: pointer;">
                     <span><i class="fas fa-crosshairs" style="margin-right: 8px;"></i> 设置原点</span>
+                </div>
+                <div class="list-item" @click="showHelp(); closeModal('settings');" style="cursor: pointer;">
+                    <span><i class="fas fa-question-circle" style="margin-right: 8px;"></i> 操作说明</span>
                 </div>
 
                 <div class="list-item" @click="startTutorial" style="cursor: pointer;">
