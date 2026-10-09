@@ -229,9 +229,6 @@
                 <button class="icon-btn lock-btn" @click="toggleLock" :data-tooltip="isLocked ? '解锁' : '锁定'">
                     <i class="fas" :class="isLocked ? 'fa-lock' : 'fa-lock-open'"></i>
                 </button>
-                <button class="icon-btn" @click="showHelp" :style="{ pointerEvents: isLocked ? 'none' : 'auto' }" data-tooltip="操作说明">
-                    <i class="fas fa-question-circle"></i>
-                </button>
                 <button v-if="roomEnabled" class="icon-btn room-btn" @click="openLobby"
                         :style="{ pointerEvents: isLocked ? 'none' : 'auto' }"
                         :data-tooltip="inRoom ? ('房间 ' + room.id) : '联机房间'">
@@ -561,6 +558,9 @@
                 <div class="list-item" @click="showOriginSet" style="cursor: pointer;">
                     <span><i class="fas fa-crosshairs" style="margin-right: 8px;"></i> 设置原点</span>
                 </div>
+                <div class="list-item" @click="showHelp(); closeModal('settings');" style="cursor: pointer;">
+                    <span><i class="fas fa-question-circle" style="margin-right: 8px;"></i> 操作说明</span>
+                </div>
 
                 <div class="list-item" @click="startTutorial" style="cursor: pointer;">
                     <span><i class="fas fa-graduation-cap" style="margin-right: 8px;"></i> 重新展示教程</span>
@@ -579,24 +579,6 @@
                 <button class="btn btn-primary" style="width: 100%; margin-top: 16px;" @click="closeModal('settings')">
                     <i class="fas fa-check"></i> 关闭
                 </button>
-            </div>
-        </div>
-
-        <!-- 6. 手动调庄模态框 -->
-        <div class="modal-overlay" :class="{ show: modals.dealerSet }" @click="closeModal('dealerSet')">
-            <div class="modal-card" @click.stop>
-                <div class="modal-title">指定庄家</div>
-                <!-- Vue 3 fix: v-if has higher priority than v-for, so we cannot use seat in v-if on the same element -->
-                <template v-for="(s, i) in seats" :key="i">
-                    <div v-if="s"
-                         class="list-item" 
-                         :class="{ active: dealerIndex === i }"
-                         @click="setDealer(i)">
-                        <span>{{ s }}</span>
-                        <span v-if="dealerIndex === i"><i class="fas fa-check"></i></span>
-                    </div>
-                </template>
-                <button class="btn btn-secondary" style="width: 100%; margin-top: 16px;" @click="closeModal('dealerSet')">取消</button>
             </div>
         </div>
 
@@ -676,37 +658,6 @@
 
 
 
-        <!-- 11. 终局结果 -->
-        <div class="modal-overlay match-end-overlay" :class="{ show: modals.matchEnd }" @click="closeModal('matchEnd')">
-            <div class="modal-card match-end-card" @click.stop>
-                <div class="match-end-header">
-                    <span class="me-badge">完场</span>
-                    <div class="modal-title" style="margin-bottom: 4px;">终局结果</div>
-                    <p v-if="matchEndSticksNote" class="me-sticks-note">{{ matchEndSticksNote }}</p>
-                </div>
-                <div class="match-end-list">
-                    <div
-                        v-for="entry in matchEndRankings"
-                        :key="entry.name"
-                        class="rank-line"
-                        :class="{ 'rank-line-champion': entry.rank === 1 }"
-                    >
-                        <span class="rank">#{{ entry.rank }}</span>
-                        <span class="rank-name">
-                            <span class="rank-name-row">
-                                {{ entry.name }}
-                                <span v-if="entry.rank === 1" class="champion-badge">冠军</span>
-                            </span>
-                            <span v-if="entry.wind" class="rank-wind">{{ entry.wind }}</span>
-                        </span>
-                        <span class="rank-score">{{ entry.score }}</span>
-                    </div>
-                </div>
-                <button class="btn btn-primary" style="width: 100%; margin-top: 16px;" @click="closeModal('matchEnd')">
-                    关闭
-                </button>
-            </div>
-        </div>
         <!-- 13. 联机房间（大厅） -->
         <div class="modal-overlay" :class="{ show: modals.room }" @click="closeModal('room')">
             <div class="modal-card room-card" @click.stop>
@@ -750,6 +701,7 @@
                             </span>
                             <button v-if="!s.name" class="btn btn-primary btn-xs" @click="claimSeat(s.index)">入座</button>
                             <button v-else-if="roomYou.seatIndex === s.index" class="btn btn-secondary btn-xs" @click="standUpSeat()">离座</button>
+                            <button v-else-if="roomYou.isHost" class="btn btn-secondary btn-xs" @click="hostClearSeat(s.index)">清位</button>
                             <span v-else class="rs-owner">已认领</span>
                         </div>
                     </div>

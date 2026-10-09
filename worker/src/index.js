@@ -42,17 +42,23 @@ export default {
     // 创建房间
     if (url.pathname === '/api/rooms' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}));
-      const id = randomCode();
-      const stub = env.ROOMS.get(env.ROOMS.idFromName(id));
-      const res = await stub.fetch(`https://do/api/rooms/${id}/init`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          playerId: typeof body.playerId === 'string' ? body.playerId.slice(0, 64) : null,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      return Response.json({ roomId: data.roomId || id }, { headers });
+      const playerId = typeof body.playerId === 'string' ? body.playerId.slice(0, 64) : null;
+
+      // 短码可能碰撞：换码重试若干次
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const id = randomCode();
+        const stub = env.ROOMS.get(env.ROOMS.idFromName(id));
+        const res = await stub.fetch(`https://do/api/rooms/${id}/init`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ playerId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data.created !== false) {
+          return Response.json({ roomId: data.roomId || id }, { headers });
+        }
+      }
+      return new Response('room id collision', { status: 503, headers });
     }
 
     // 读取快照 / WebSocket

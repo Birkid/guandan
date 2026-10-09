@@ -46,14 +46,17 @@ export class RoomDO extends DurableObject {
 
     if (action === 'init') {
       const body = await request.json().catch(() => ({}));
+      let created = false;
       if (!this.state) {
         this.state = createRoom({ id: roomId || 'ROOM00', hostId: body.playerId || null });
         await this.persist();
+        created = true;
       } else if (body.playerId && !this.state.hostId) {
         this.state.hostId = body.playerId;
         await this.persist();
       }
-      return Response.json({ roomId: this.state.id });
+      // created=false 说明这个短码已被占用（碰撞），交给 Worker 换码重试
+      return Response.json({ roomId: this.state.id, created });
     }
 
     if (action === 'state') {

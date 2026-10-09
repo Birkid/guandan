@@ -108,15 +108,11 @@ createApp({
             history: false,
             stats: false,
             settings: false,
-            dealerSet: false,
             originSet: false, // 设置原点模态框
             help: false, // 操作说明模态框
-            matchEnd: false,
             room: false,
         });
         
-        const matchEndRankings = ref([]);
-        const matchEndSticksNote = ref('');
         
         const activeSeatIndex = ref(null);
         const newPlayerName = ref('');
@@ -442,13 +438,9 @@ createApp({
         const activePlayers = computed(() => seats.value.filter(n => n));
         const availablePlayers = computed(() => players.value.filter(p => !seats.value.includes(p.name)));
         const seatPlayerCount = computed(() => 4);
-        const gameModeLabel = computed(() => '通用');
         const visibleSeatIndices = computed(() => Array.from({ length: seatPlayerCount.value }, (_, i) => i));
         const handLabel = computed(() => String(currentRound.value));
-        const compassLoopCount = computed(() => seatPlayerCount.value);
         const displayPosForSeat = (seatIndex) => seatIndex;
-        const COMPASS_NAMES = ['bottom', 'right', 'top', 'left'];
-        const compassName = (compassPos) => COMPASS_NAMES[compassPos] ?? 'bottom';
 
         // 生肖（四圆并列布局）
         const seatZodiac = (index) => seatZodiacs.value[index] ?? index;
@@ -537,6 +529,7 @@ createApp({
             const hashRoom = parseRoomFromHash();
             if (hashRoom && roomEnabled) {
                 lobbyCode.value = hashRoom;
+                modals.value.room = true; // 扫码进来的人直接看到大厅，方便入座
                 connectRoom(hashRoom);
             }
             window.addEventListener('beforeunload', () => { if (roomClient) roomClient.close(); });
@@ -1837,6 +1830,8 @@ createApp({
                 lastDiff.value = diff;
                 setTimeout(() => { lastDiff.value = {}; }, 3000);
             }
+            // 大厅开着时补画二维码（房间状态是异步到达的）
+            if (modals.value.room) nextTick(renderQr);
         };
 
         const ensureClient = () => {
@@ -1903,6 +1898,9 @@ createApp({
             roomOnline.value = [false, false, false, false];
             roomStatus.value = 'offline';
             modals.value.room = false;
+            if (window.history) {
+                window.history.replaceState(null, '', location.pathname + location.search);
+            }
             loadState(); // 回到本地数据
         };
 
@@ -1919,6 +1917,16 @@ createApp({
 
         const standUpSeat = () => {
             if (mySeatIndex.value >= 0) ensureClient().standUp(mySeatIndex.value);
+        };
+
+        // 房主：把掉线/离席的人请离座位（服务端允许房主清任意座位）
+        const hostClearSeat = (seat) => {
+            if (!roomYou.value.isHost) return;
+            const s = room.value && room.value.seats[seat];
+            const label = (s && s.name) ? s.name : '该座位';
+            if (confirm('把「' + label + '」请离座位？其分数会被清零')) {
+                ensureClient().standUp(seat);
+            }
         };
 
         const confirmProposal = (id) => ensureClient().confirm(id);
@@ -1941,11 +1949,11 @@ createApp({
             isDark, toggleTheme,
             isLocked, toggleLock,
             seats, players, currentRound, dealerIndex, dealerStreak, history, lastDiff,
-            gameMode, gameModeLabel, handLabel,
+            gameMode, handLabel,
             cardLayout, setCardLayout,
             seatZodiacs, seatZodiacEmoji, seatZodiacName, reshuffleSeatZodiacs,
             visibleSeatIndices, seatPlayerCount,
-            compassLoopCount, displayPosForSeat, compassName,
+            displayPosForSeat,
             modals, closeModal,
             activePlayers, availablePlayers, dialRotation,
             getPlayerScore, getPlayerCurrentScore, handleSeatClick, handlePlayerCardClick,
@@ -1954,7 +1962,6 @@ createApp({
             appendNumber, backspaceNumber,
             undo, handleNextRoundClick,
             formatTime, clearData,
-            matchEndRankings, matchEndSticksNote,
             showStats, showHistory: () => modals.value.history = true, showSettings: () => modals.value.settings = true, showRoundModal: () => {},
             showHelp: () => modals.value.help = true,
             showOriginSet, updateOrigin, setOriginToZero, standUp,
@@ -1976,7 +1983,7 @@ createApp({
             // Room（联机房间）
             roomEnabled, inRoom, room, roomOnline, roomYou, roomStatus,
             lobbyName, lobbyCode, lobbyError, lobbyBusy, qrBox, shareLink, hostName,
-            openLobby, doCreateRoom, doJoinRoom, leaveRoom, claimSeat, standUpSeat,
+            openLobby, doCreateRoom, doJoinRoom, leaveRoom, claimSeat, standUpSeat, hostClearSeat,
             confirmProposal, rejectProposal, hostReset, copyShareLink, proposalText,
             pendingForMe, pendingOthers, toast,
         };
