@@ -1883,3 +1883,10 @@ body.dark .room-confirm-bar { background: #1f2937; color: #eee; }
 .room-toast.error { background: rgba(220, 38, 38, 0.94); }
 .toast-enter-active, .toast-leave-active { transition: opacity 0.25s, transform 0.25s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(8px); }
+
+/* ---- 窄屏：顶部工具栏更紧凑（按钮多时避免溢出） ---- */
+@media (max-width: 480px) {
+    .header { padding-left: 6px; padding-right: 6px; }
+    .header-actions { gap: 2px; }
+    .icon-btn { width: 32px; height: 32px; font-size: 17px; padding: 5px; }
+}
