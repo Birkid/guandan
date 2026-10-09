@@ -6,7 +6,7 @@
  */
 
 /** 例：'https://guandan-room.<你的账号>.workers.dev' */
-export const ROOM_SERVER = 'https://guandan-room.birkid.workers.dev';
+export const ROOM_SERVER = 'https://guandan.birkid.kdns.fr';
 
 export function isRoomEnabled() {
   return typeof ROOM_SERVER === 'string' && /^https?:\/\//.test(ROOM_SERVER);
