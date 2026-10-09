@@ -1,0 +1,21 @@
+name = "guandan-room"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# 每个房间一个 Durable Object 实例（单线程权威状态）
+[durable_objects]
+bindings = [
+  { name = "ROOMS", class_name = "RoomDO" }
+]
+
+# 首次部署用的迁移；SQLite 后端（免费额度友好，支持 WebSocket Hibernation）
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomDO"]
+
+[vars]
+# 允许的前端来源（逗号分隔）。上线后把 GitHub Pages 域名放这里。
+ALLOWED_ORIGINS = "https://birkid.github.io,http://localhost:8123,http://localhost:8000,http://localhost:3000,http://127.0.0.1:8123"
+
+[observability]
+enabled = true

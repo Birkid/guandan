@@ -7,6 +7,7 @@
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs@04f46c6/qrcode.min.js"></script>
     <link rel="stylesheet" href="css/style.css">
     <link rel="stylesheet" href="css/toggle.css">
     <link rel="stylesheet" href="css/lock.css">
@@ -231,6 +232,12 @@
                 <button class="icon-btn" @click="showHelp" :style="{ pointerEvents: isLocked ? 'none' : 'auto' }" data-tooltip="操作说明">
                     <i class="fas fa-question-circle"></i>
                 </button>
+                <button v-if="roomEnabled" class="icon-btn room-btn" @click="openLobby"
+                        :style="{ pointerEvents: isLocked ? 'none' : 'auto' }"
+                        :data-tooltip="inRoom ? ('房间 ' + room.id) : '联机房间'">
+                    <i class="fas fa-users"></i>
+                    <span v-if="inRoom" class="room-dot" :class="roomStatus"></span>
+                </button>
                 <button class="icon-btn" @click="showSettings" :style="{ pointerEvents: isLocked ? 'none' : 'auto' }" data-tooltip="设置">
                     <i class="fas fa-cog"></i>
                 </button>
@@ -295,7 +302,7 @@
                      { 'empty-seat': !seats[index] }
                  ]"
                  :style="{ '--scale-factor': globalScale, pointerEvents: isLocked ? 'none' : 'auto' }"
-                 :draggable="!isLocked && seats[index] ? true : false"
+                :draggable="!isLocked && !inRoom && seats[index] ? true : false"
                  @click="seats[index] ? handlePlayerCardClick(index) : handleSeatClick(index)"
                  @dragstart="handleDragStart(index, $event)"
                  @dragend="handleDragEnd"
@@ -336,10 +343,14 @@
             <button class="btn btn-warning" @click="undo" :disabled="history.length === 0" :style="{ opacity: history.length ? 1 : 0.5, pointerEvents: isLocked ? 'none' : 'auto' }">
                 <i class="fas fa-undo"></i> 撤销
             </button>
+            <button class="btn btn-primary" @click="openSettleModal"
+                    :style="{ flex: 1, justifyContent: 'center', pointerEvents: isLocked ? 'none' : 'auto' }">
+                <i class="fas fa-calculator"></i> 记分
+            </button>
             <button 
                 class="btn btn-secondary next-round-btn" 
                 :class="{ dragging: dragState.draggingNextRound }"
-                :draggable="!isLocked"
+                :draggable="!isLocked && (!inRoom || roomYou.isHost)"
                 @click="handleNextRoundClick"
                 @dragstart="handleNextRoundDragStart"
                 @dragend="handleNextRoundDragEnd"
@@ -351,6 +362,27 @@
             </button>
         </footer>
 
+        <!-- 房间：待我确认 -->
+        <div v-if="inRoom && pendingForMe.length" class="room-confirm-bar">
+            <div class="rcb-title"><i class="fas fa-hand-paper"></i> 待你确认（{{ pendingForMe.length }}）</div>
+            <div v-for="pr in pendingForMe" :key="pr.id" class="rcb-item">
+                <span class="rcb-text">{{ proposalText(pr) }}</span>
+                <div class="rcb-actions">
+                    <button class="btn btn-secondary btn-xs" @click="rejectProposal(pr.id)">拒绝</button>
+                    <button class="btn btn-primary btn-xs" @click="confirmProposal(pr.id)">确认</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 房间：等待他人确认 -->
+        <div v-if="inRoom && !pendingForMe.length && pendingOthers.length" class="room-confirm-bar passive">
+            <i class="fas fa-hourglass-half"></i> 等待其他玩家确认（{{ pendingOthers.length }}）
+        </div>
+
+        <!-- 提示 -->
+        <transition name="toast">
+            <div v-if="toast.text" class="room-toast" :class="toast.type">{{ toast.text }}</div>
+        </transition>
         <!-- 模态框组件 -->
         
         <!-- 1. 结算模态框 -->
@@ -673,6 +705,62 @@
                 <button class="btn btn-primary" style="width: 100%; margin-top: 16px;" @click="closeModal('matchEnd')">
                     关闭
                 </button>
+            </div>
+        </div>
+        <!-- 13. 联机房间（大厅） -->
+        <div class="modal-overlay" :class="{ show: modals.room }" @click="closeModal('room')">
+            <div class="modal-card room-card" @click.stop>
+                <div class="modal-title">
+                    <i class="fas fa-users"></i> 联机房间
+                    <span v-if="inRoom" class="room-code-chip">{{ room.id }}</span>
+                </div>
+
+                <template v-if="!inRoom">
+                    <div class="room-hint">
+                        同一房间内每人绑定一个座位，只能操作<b>自己</b>的分数；<br>
+                        结算需相关玩家各自确认后才生效。
+                    </div>
+                    <input class="input-field" v-model="lobbyName" placeholder="你的名字" maxlength="12" />
+                    <button class="btn btn-primary" style="width:100%;margin-top:10px;"
+                            :disabled="lobbyBusy" @click="doCreateRoom">
+                        <i class="fas fa-plus"></i> 开一个新房间
+                    </button>
+                    <div class="room-divider"><span>或加入已有房间</span></div>
+                    <div style="display:flex;gap:8px;">
+                        <input class="input-field" v-model="lobbyCode" placeholder="房间码"
+                               maxlength="6" style="text-transform:uppercase;letter-spacing:3px;text-align:center;" />
+                        <button class="btn btn-secondary" :disabled="lobbyBusy" @click="doJoinRoom">加入</button>
+                    </div>
+                    <p v-if="lobbyError" class="room-error">{{ lobbyError }}</p>
+                </template>
+
+                <template v-else>
+                    <div class="room-qr" ref="qrBox"></div>
+                    <div class="room-share">
+                        <span class="room-link">{{ shareLink }}</span>
+                        <button class="btn btn-secondary btn-xs" @click="copyShareLink"><i class="fas fa-copy"></i> 复制</button>
+                    </div>
+                    <div class="room-seat-list">
+                        <div v-for="s in room.seats" :key="s.index" class="room-seat-row"
+                             :class="{ mine: roomYou.seatIndex === s.index }">
+                            <span class="rs-zodiac">{{ seatZodiacEmoji(s.index) }}</span>
+                            <span class="rs-name">{{ s.name || '空位' }}</span>
+                            <span class="rs-online" :class="{ on: roomOnline[s.index] }">
+                                {{ roomOnline[s.index] ? '在线' : '离线' }}
+                            </span>
+                            <button v-if="!s.name" class="btn btn-primary btn-xs" @click="claimSeat(s.index)">入座</button>
+                            <button v-else-if="roomYou.seatIndex === s.index" class="btn btn-secondary btn-xs" @click="standUpSeat()">离座</button>
+                            <span v-else class="rs-owner">已认领</span>
+                        </div>
+                    </div>
+                    <div class="room-host-row">
+                        <span><i class="fas fa-crown"></i> 房主：{{ hostName || '—' }}</span>
+                        <button v-if="roomYou.isHost" class="btn btn-secondary btn-xs" @click="hostReset">清空分数</button>
+                    </div>
+                    <button class="btn btn-warning" style="width:100%;margin-top:14px;" @click="leaveRoom">
+                        <i class="fas fa-sign-out-alt"></i> 退出房间
+                    </button>
+                </template>
             </div>
         </div>
     </div>

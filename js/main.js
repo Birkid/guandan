@@ -12,6 +12,8 @@ import {
     cardOffsetForScale,
     applyCardOffsets,
 } from './layout-scale.js';
+import { isRoomEnabled, roomUrl, parseRoomFromHash, getPlayerName, setPlayerName } from './config.js';
+import { RoomClient } from './net.js';
 
 const { createApp, ref, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
 
@@ -77,6 +79,20 @@ createApp({
         const dealerIndex = ref(0);
         const dealerStreak = ref(0); // 当前庄家的连庄次数
         const history = ref([]);
+        // ---- 联机房间（未配置 ROOM_SERVER 时整体隐藏） ----
+        const roomEnabled = isRoomEnabled();
+        const room = ref(null);            // 房间快照
+        const roomOnline = ref([false, false, false, false]);
+        const roomYou = ref({ playerId: null, isHost: false, seatIndex: -1 });
+        const roomStatus = ref('offline'); // connecting | online | offline
+        const lobbyName = ref(getPlayerName());
+        const lobbyCode = ref('');
+        const lobbyError = ref('');
+        const lobbyBusy = ref(false);
+        const qrBox = ref(null);
+        const toast = ref({ text: '', type: 'info' });
+        let roomClient = null;
+        let toastTimer = null;
         const lastDiff = ref({}); // { name: diff } for animation
 
         // 桌况 / 布局
@@ -96,6 +112,7 @@ createApp({
             originSet: false, // 设置原点模态框
             help: false, // 操作说明模态框
             matchEnd: false,
+            room: false,
         });
         
         const matchEndRankings = ref([]);
@@ -438,6 +455,11 @@ createApp({
         const seatZodiacEmoji = (index) => zodiacEmoji(seatZodiac(index));
         const seatZodiacName = (index) => zodiacName(seatZodiac(index));
         const reshuffleSeatZodiacs = () => {
+            if (inRoom.value) {
+                if (!roomYou.value.isHost) { showToast('只有房主可以换生肖', 'error'); return; }
+                ensureClient().reshuffleZodiacs();
+                return;
+            }
             seatZodiacs.value = pickDistinctZodiacs(4);
             saveState();
         };
@@ -511,6 +533,13 @@ createApp({
         // Init
         onMounted(() => {
             loadState();
+            // 联机房间：URL 带 #room=XXXX 时自动加入
+            const hashRoom = parseRoomFromHash();
+            if (hashRoom && roomEnabled) {
+                lobbyCode.value = hashRoom;
+                connectRoom(hashRoom);
+            }
+            window.addEventListener('beforeunload', () => { if (roomClient) roomClient.close(); });
             initTheme();
             initLayoutScale();
             layoutResizeHandler = handleLayoutResize;
@@ -565,6 +594,7 @@ createApp({
 
         // Data Persistence
         const saveState = () => {
+            if (inRoom.value) return; // 房间模式由服务端权威，不写入本地存档
             const state = {
                 players: players.value,
                 seats: seats.value,
@@ -624,6 +654,7 @@ createApp({
 
 
         const addNewPlayer = () => {
+            if (inRoom.value) { showToast('房间模式下请直接在座位上入座', 'error'); return; }
             const name = newPlayerName.value.trim();
             if (!name) return;
             if (players.value.some(p => p.name === name)) return alert('玩家已存在');
@@ -633,6 +664,12 @@ createApp({
         };
 
         const sitDown = (name) => {
+            if (inRoom.value) {
+                const seat = activeSeatIndex.value;
+                closeModal('seat');
+                if (seat !== null) ensureClient().claimSeat(seat, name);
+                return;
+            }
             seats.value[activeSeatIndex.value] = name;
             closeModal('seat');
             saveState();
@@ -673,6 +710,22 @@ createApp({
         };
 
         const confirmSettle = () => {
+            if (inRoom.value) {
+                const amount = parseInt(settleAmount.value);
+                if (!settleFrom.value || !settleTo.value || !amount || amount <= 0) {
+                    errorFrom.value = !settleFrom.value;
+                    errorTo.value = !settleTo.value;
+                    setTimeout(() => { errorFrom.value = false; errorTo.value = false; }, 2000);
+                    return;
+                }
+                const fromIdx = seats.value.indexOf(settleFrom.value);
+                const toIdx = seats.value.indexOf(settleTo.value);
+                if (fromIdx < 0 || toIdx < 0) return;
+                ensureClient().proposeSettle([{ from: fromIdx, to: toIdx, amount }]);
+                closeModal('settle');
+                showToast('已发起结算，等待受影响玩家确认');
+                return;
+            }
             // 检查是否有未填写的字段
             let hasError = false;
             if (!settleFrom.value) {
@@ -768,6 +821,13 @@ createApp({
         });
 
         const undo = () => {
+            if (inRoom.value) {
+                if (!roomYou.value.isHost) { showToast('只有房主可以撤销', 'error'); return; }
+                if (history.value.length === 0) return;
+                if (!confirm('确定撤销上一次结算？')) return;
+                ensureClient().undo();
+                return;
+            }
             if (history.value.length === 0) return;
             if (!confirm('确定撤销上一次结算？')) return;
 
@@ -810,6 +870,17 @@ createApp({
         };
 
         const handleNextRoundDragEnd = () => {
+            if (inRoom.value) {
+                const target = dragState.value.overIndex;
+                dragState.value.draggingNextRound = false;
+                dragState.value.overIndex = null;
+                removeDragClone();
+                if (target === null) return;
+                if (!roomYou.value.isHost) { showToast('只有房主可以指定庄家', 'error'); return; }
+                const initial = seats.value.some((s) => !s);
+                ensureClient().advanceDealer(target, { initial, bumpRound: !initial });
+                return;
+            }
             const targetIndex = dragState.value.overIndex;
             
             dragState.value.draggingNextRound = false;
@@ -905,6 +976,18 @@ createApp({
         };
 
         const handleNextRoundTouchEnd = (event) => {
+            if (inRoom.value) {
+                const target = dragState.value.overIndex;
+                const wasDragging = dragState.value.draggingNextRound;
+                dragState.value.draggingNextRound = false;
+                dragState.value.overIndex = null;
+                removeDragClone();
+                if (!wasDragging || target === null) return;
+                if (!roomYou.value.isHost) { showToast('只有房主可以指定庄家', 'error'); return; }
+                const initial = seats.value.some((s) => !s);
+                ensureClient().advanceDealer(target, { initial, bumpRound: !initial });
+                return;
+            }
             if (nextRoundTouchTimeout) {
                 clearTimeout(nextRoundTouchTimeout);
                 nextRoundTouchTimeout = null;
@@ -1069,6 +1152,7 @@ createApp({
 
         // Drag and Drop (Desktop)
         const handleDragStart = (index, event) => {
+            if (inRoom.value) return; // 房间模式下座位由各人认领，禁止拖动
             const seat = seats.value[index];
             if (!seat) return;
             
@@ -1141,6 +1225,7 @@ createApp({
 
         const handleDrop = (toIndex, event) => {
             event.preventDefault();
+            if (inRoom.value) return;
 
             // Fix: If dragging "Next Round" button, do not process here and do not clear state.
             // The logic is handled in handleNextRoundDragEnd using the overIndex state.
@@ -1165,6 +1250,7 @@ createApp({
 
         // Touch Events (Mobile)
         const handleTouchStart = (index, event) => {
+            if (inRoom.value) return;
             const seat = seats.value[index];
             if (!seat) return;
             
@@ -1280,6 +1366,13 @@ createApp({
 
         // Round Management
         const handleNextRoundClick = () => {
+            if (inRoom.value) {
+                if (!roomYou.value.isHost) { showToast('只有房主可以进入下一局', 'error'); return; }
+                const settled = history.value.some(h => h.round === currentRound.value);
+                if (!settled && !confirm('本局尚未结算，确定进入下一局？')) return;
+                ensureClient().advanceNext();
+                return;
+            }
             // Don't trigger click if we just finished dragging
             if (dragState.value.draggingNextRound) return;
             
@@ -1301,6 +1394,11 @@ createApp({
         const formatTime = (ts) => new Date(ts).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second: '2-digit'});
         
         const clearData = () => {
+            if (inRoom.value) {
+                if (!roomYou.value.isHost) { showToast('只有房主可以清空分数', 'error'); return; }
+                if (confirm('确定清空房间内所有人的分数？')) ensureClient().reset();
+                return;
+            }
             if (confirm('确定清空所有数据？')) {
                 clearGameStorage();
                 localStorage.removeItem('mj_scale');
@@ -1315,6 +1413,11 @@ createApp({
         };
         
         const updateOrigin = (name, value) => {
+            if (inRoom.value) {
+                const idx = seats.value.indexOf(name);
+                if (idx >= 0) ensureClient().setOrigin(idx, parseInt(value) || 0);
+                return;
+            }
             const p = players.value.find(p => p.name === name);
             if (p) {
                 const numValue = parseInt(value) || 0;
@@ -1324,6 +1427,11 @@ createApp({
         };
         
         const setOriginToZero = (name) => {
+            if (inRoom.value) {
+                const idx = seats.value.indexOf(name);
+                if (idx >= 0) ensureClient().setOrigin(idx, 0);
+                return;
+            }
             const p = players.value.find(p => p.name === name);
             if (p) {
                 p.origin = 0;
@@ -1332,6 +1440,7 @@ createApp({
         };
 
         const standUp = () => {
+            if (inRoom.value) { standUpSeat(); return; }
             seats.value[activeSeatIndex.value] = null;
             closeModal('seat');
             saveState();
@@ -1658,6 +1767,176 @@ createApp({
             if (document.visibilityState === 'visible') requestWakeLock();
         });
 
+        // ==================== 联机房间 ====================
+        const inRoom = computed(() => !!room.value);
+        const shareLink = computed(() => (room.value ? roomUrl(room.value.id) : ''));
+        const hostName = computed(() => {
+            if (!room.value) return '';
+            const s = room.value.seats.find(x => x.ownerId === room.value.hostId);
+            return (s && s.name) ? s.name : '';
+        });
+        const mySeatIndex = computed(() => roomYou.value.seatIndex);
+        const pendingAll = computed(() => (room.value ? room.value.proposals : []));
+        const pendingForMe = computed(() => {
+            const idx = mySeatIndex.value;
+            if (idx < 0) return [];
+            return pendingAll.value.filter(p => p.need.includes(idx) && !p.have.includes(idx));
+        });
+        const pendingOthers = computed(() => {
+            const mine = pendingForMe.value;
+            return pendingAll.value.filter(p => !mine.includes(p));
+        });
+
+        const seatNameAt = (i) => {
+            if (!room.value) return null;
+            const s = room.value.seats[i];
+            return s ? s.name : null;
+        };
+        const proposalText = (p) => {
+            const txs = (p.payload && p.payload.transactions) || [];
+            const text = txs
+                .map(t => (seatNameAt(t.from) || '?') + ' → ' + (seatNameAt(t.to) || '?') + ' ' + t.amount)
+                .join('，');
+            return text || '结算';
+        };
+
+        const showToast = (text, type = 'info') => {
+            toast.value = { text, type };
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => { toast.value = { text: '', type: 'info' }; }, 2600);
+        };
+
+        const applyRoom = (state) => {
+            room.value = state;
+            seats.value = state.seats.map(s => s.name);
+            players.value = state.seats
+                .filter(s => s.name)
+                .map(s => ({ name: s.name, score: s.score, origin: s.origin }));
+            currentRound.value = state.currentRound;
+            dealerIndex.value = state.dealerIndex;
+            dealerStreak.value = state.dealerStreak;
+            if (Array.isArray(state.seatZodiacs) && state.seatZodiacs.length === 4) {
+                seatZodiacs.value = state.seatZodiacs;
+            }
+            history.value = state.history || [];
+        };
+
+        const applyRoomMessage = (msg) => {
+            roomOnline.value = msg.online || [false, false, false, false];
+            roomYou.value = msg.you || { playerId: null, isHost: false, seatIndex: -1 };
+            applyRoom(msg.room);
+            const applied = (msg.events || []).find(e => e.type === 'settle_applied');
+            if (applied && applied.transactions) {
+                const diff = {};
+                applied.transactions.forEach(t => {
+                    const fn = seatNameAt(t.from);
+                    const tn = seatNameAt(t.to);
+                    if (fn) diff[fn] = (diff[fn] || 0) - t.amount;
+                    if (tn) diff[tn] = (diff[tn] || 0) + t.amount;
+                });
+                lastDiff.value = diff;
+                setTimeout(() => { lastDiff.value = {}; }, 3000);
+            }
+        };
+
+        const ensureClient = () => {
+            if (roomClient) return roomClient;
+            roomClient = new RoomClient({
+                onState: applyRoomMessage,
+                onError: (e) => showToast((e && e.msg) || '房间操作失败', 'error'),
+                onStatus: (s) => { roomStatus.value = s; },
+            });
+            return roomClient;
+        };
+
+        const connectRoom = (id) => {
+            const c = ensureClient();
+            if (c.roomId && c.roomId !== id) c.close();
+            c.connect(id);
+        };
+
+        const openLobby = () => {
+            modals.value.room = true;
+            nextTick(() => renderQr());
+        };
+
+        const renderQr = () => {
+            const el = qrBox.value;
+            if (!el || !room.value) return;
+            const QR = window.QRCode;
+            if (!QR) return; // 二维码库没加载出来时，仍可复制链接
+            el.innerHTML = '';
+            try {
+                new QR(el, { text: shareLink.value, width: 168, height: 168, correctLevel: QR.CorrectLevel.M });
+            } catch (e) { /* ignore */ }
+        };
+
+        const doCreateRoom = async () => {
+            const name = lobbyName.value.trim();
+            if (!name) { lobbyError.value = '请先填写名字'; return; }
+            setPlayerName(name);
+            lobbyBusy.value = true;
+            lobbyError.value = '';
+            try {
+                const id = await ensureClient().createRoom();
+                connectRoom(id);
+            } catch (e) {
+                lobbyError.value = (e && e.message) || '创建失败';
+            } finally {
+                lobbyBusy.value = false;
+            }
+        };
+
+        const doJoinRoom = () => {
+            const code = (lobbyCode.value || '').trim().toUpperCase();
+            if (!/^[A-Z0-9]{6}$/.test(code)) { lobbyError.value = '房间码为 6 位字母数字'; return; }
+            const name = lobbyName.value.trim();
+            if (name) setPlayerName(name);
+            lobbyError.value = '';
+            connectRoom(code);
+        };
+
+        const leaveRoom = () => {
+            if (roomClient) { roomClient.close(); roomClient = null; }
+            room.value = null;
+            roomYou.value = { playerId: null, isHost: false, seatIndex: -1 };
+            roomOnline.value = [false, false, false, false];
+            roomStatus.value = 'offline';
+            modals.value.room = false;
+            loadState(); // 回到本地数据
+        };
+
+        const claimSeat = (seat) => {
+            const name = lobbyName.value.trim() || getPlayerName();
+            if (!name) {
+                activeSeatIndex.value = seat;
+                modals.value.seat = true;
+                return;
+            }
+            setPlayerName(name);
+            ensureClient().claimSeat(seat, name);
+        };
+
+        const standUpSeat = () => {
+            if (mySeatIndex.value >= 0) ensureClient().standUp(mySeatIndex.value);
+        };
+
+        const confirmProposal = (id) => ensureClient().confirm(id);
+        const rejectProposal = (id) => ensureClient().reject(id);
+
+        const hostReset = () => {
+            if (!roomYou.value.isHost) return;
+            if (confirm('确定清空房间内所有人的分数？')) ensureClient().reset();
+        };
+
+        const copyShareLink = async () => {
+            try {
+                await navigator.clipboard.writeText(shareLink.value);
+                showToast('链接已复制');
+            } catch (e) {
+                showToast('复制失败，请长按手动复制', 'error');
+            }
+        };
         return {
             isDark, toggleTheme,
             isLocked, toggleLock,
@@ -1693,7 +1972,13 @@ createApp({
             diceMode, isRolling, hasRolled, diceStyles, handleDialClick, closeDiceMode,
 
             // Tutorial
-            tutorialState, currentTutorialStep, startTutorial, nextTutorial, prevTutorial, endTutorial, spotlightStyle, messageStyle
+            tutorialState, currentTutorialStep, startTutorial, nextTutorial, prevTutorial, endTutorial, spotlightStyle, messageStyle,
+            // Room（联机房间）
+            roomEnabled, inRoom, room, roomOnline, roomYou, roomStatus,
+            lobbyName, lobbyCode, lobbyError, lobbyBusy, qrBox, shareLink, hostName,
+            openLobby, doCreateRoom, doJoinRoom, leaveRoom, claimSeat, standUpSeat,
+            confirmProposal, rejectProposal, hostReset, copyShareLink, proposalText,
+            pendingForMe, pendingOthers, toast,
         };
     }
 }).mount('#app');
