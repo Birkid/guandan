@@ -111,99 +111,46 @@ test('validateTransactions: 各类非法输入', () => {
   assert.equal(validateTransactions([{ from: 0, to: 1, amount: 10 }]), null);
 });
 
-test('结算：发起人是当事方 → 自己自动确认，对方确认后落账', () => {
+test('结算：各记各的，提交即生效（无需对方确认）', () => {
   const s = seatAll(createRoom({ id: 'AB12CD', hostId: 'p1' }));
-  const proposed = reduce(s, {
-    t: 'propose',
-    kind: 'settle',
-    payload: { transactions: [{ from: 0, to: 1, amount: 500 }] },
-  }, { playerId: 'p1' });
+  const r = reduce(s, { t: 'settle', to: 1, amount: 500 }, { playerId: 'p1' });
 
-  assert.equal(proposed.ok, true);
-  assert.equal(proposed.state.proposals.length, 1);
-  const p = proposed.state.proposals[0];
-  assert.deepEqual(p.need, [0, 1]);
-  assert.deepEqual(p.have, [0], '发起人自己那份应自动确认');
-
-  // 无关玩家不能确认
-  const wrong = reduce(proposed.state, { t: 'confirm', proposalId: p.id }, { playerId: 'p3' });
-  assert.equal(wrong.ok, false);
-  assert.equal(wrong.error.code, 'forbidden');
-
-  const confirmed = reduce(proposed.state, { t: 'confirm', proposalId: p.id }, { playerId: 'p2' });
-  assert.equal(confirmed.ok, true);
-  assert.equal(confirmed.state.proposals.length, 0, '确认齐后提案应消失');
-  assert.equal(confirmed.state.seats[0].score, -500);
-  assert.equal(confirmed.state.seats[1].score, 500);
-  assert.equal(confirmed.state.history.length, 1);
-  assert.deepEqual(confirmed.state.history[0].transactions, [{ from: '玩家1', to: '玩家2', amount: 500 }]);
-  assert.equal(confirmed.events.some((e) => e.type === 'settle_applied'), true);
+  assert.equal(r.ok, true);
+  assert.equal(r.state.seats[0].score, -500);
+  assert.equal(r.state.seats[1].score, 500);
+  assert.equal(r.state.history.length, 1);
+  assert.deepEqual(r.state.history[0].transactions, [{ from: '玩家1', to: '玩家2', amount: 500 }]);
+  assert.equal(r.events.some((e) => e.type === 'settle_applied'), true);
+  assert.equal('proposals' in r.state, false, '不再有待确认提案');
 });
+  
 
-test('结算：发起人是第三者 → 双方都要确认', () => {
+test('结算：不能给自己记分', () => {
   const s = seatAll(createRoom({ id: 'AB12CD', hostId: 'p1' }));
-  const proposed = reduce(s, {
-    t: 'propose',
-    kind: 'settle',
-    payload: { transactions: [{ from: 0, to: 1, amount: 100 }] },
-  }, { playerId: 'p3' });
-
-  const p = proposed.state.proposals[0];
-  assert.deepEqual(p.have, [], '第三者发起时不应有自动确认');
-
-  const a = reduce(proposed.state, { t: 'confirm', proposalId: p.id }, { playerId: 'p1' });
-  assert.equal(a.state.proposals.length, 1, '还差一个人');
-  const b = reduce(a.state, { t: 'confirm', proposalId: p.id }, { playerId: 'p2' });
-  assert.equal(b.state.proposals.length, 0);
-  assert.equal(b.state.seats[1].score, 100);
+  const r = reduce(s, { t: 'settle', to: 0, amount: 100 }, { playerId: 'p1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'tx_same_seat');
+  assert.equal(r.state.seats[0].score, 0);
 });
+  
 
-test('结算：一局多笔（打包一个提案）', () => {
-  const s = seatAll(createRoom({ id: 'AB12CD', hostId: 'p1' }));
-  const proposed = reduce(s, {
-    t: 'propose',
-    kind: 'settle',
-    payload: {
-      transactions: [
-        { from: 0, to: 1, amount: 300 },
-        { from: 2, to: 3, amount: 200 },
-      ],
-    },
-  }, { playerId: 'p1' });
-  const p = proposed.state.proposals[0];
-  assert.deepEqual(p.need, [0, 1, 2, 3], '四人都受影响');
-
-  let st = reduce(proposed.state, { t: 'confirm', proposalId: p.id }, { playerId: 'p2' }).state;
-  assert.equal(st.proposals.length, 1);
-  st = reduce(st, { t: 'confirm', proposalId: p.id }, { playerId: 'p3' }).state;
-  assert.equal(st.proposals.length, 1);
-  st = reduce(st, { t: 'confirm', proposalId: p.id }, { playerId: 'p4' }).state;
-  assert.equal(st.proposals.length, 0);
-  assert.equal(st.seats[0].score, -300);
-  assert.equal(st.seats[1].score, 300);
-  assert.equal(st.seats[2].score, -200);
-  assert.equal(st.seats[3].score, 200);
-  assert.equal(st.history[0].transactions.length, 2);
+test('结算：对方不在座位上会失败', () => {
+  const s = createRoom({ id: 'AB12CD', hostId: 'p1' });
+  const seated = reduce(s, { t: 'claimSeat', seat: 0, name: '张三' }, { playerId: 'p1' }).state;
+  const r = reduce(seated, { t: 'settle', to: 1, amount: 200 }, { playerId: 'p1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'tx_invalid');
+  assert.equal(r.state.seats[0].score, 0);
 });
+  
 
-test('结算：拒绝会撤销提案', () => {
+test('结算：未入座不能记分', () => {
   const s = seatAll(createRoom({ id: 'AB12CD', hostId: 'p1' }));
-  const proposed = reduce(s, {
-    t: 'propose', kind: 'settle', payload: { transactions: [{ from: 0, to: 1, amount: 50 }] },
-  }, { playerId: 'p1' });
-  const p = proposed.state.proposals[0];
-  const rejected = reduce(proposed.state, { t: 'reject', proposalId: p.id }, { playerId: 'p2' });
-  assert.equal(rejected.ok, true);
-  assert.equal(rejected.state.proposals.length, 0);
-  assert.equal(rejected.state.seats[0].score, 0);
-});
-
-test('结算：未入座不能发起', () => {
-  const s = seatAll(createRoom({ id: 'AB12CD', hostId: 'p1' }));
-  const r = reduce(s, { t: 'propose', kind: 'settle', payload: { transactions: [{ from: 0, to: 1, amount: 10 }] } }, { playerId: 'zzz' });
+  const r = reduce(s, { t: 'settle', to: 1, amount: 10 }, { playerId: 'zzz' });
   assert.equal(r.ok, false);
   assert.equal(r.error.code, 'not_seated');
 });
+  
 
 test('advance: 只有房主可换庄/下一局', () => {
   const s = seatAll(createRoom({ id: 'AB12CD', hostId: 'p1' }));
@@ -235,10 +182,8 @@ test('advance: 指定初始庄家 / 连庄', () => {
 
 test('undo: 房主撤销上一笔（按名字回滚）', () => {
   const s0 = seatAll(createRoom({ id: 'AB12CD', hostId: 'p1' }));
-  const proposed = reduce(s0, {
-    t: 'propose', kind: 'settle', payload: { transactions: [{ from: 0, to: 1, amount: 400 }] },
-  }, { playerId: 'p1' });
-  const applied = reduce(proposed.state, { t: 'confirm', proposalId: proposed.state.proposals[0].id }, { playerId: 'p2' }).state;
+  const applied = reduce(s0, { t: 'settle', to: 1, amount: 400 }, { playerId: 'p1' }).state;
+  
   assert.equal(applied.seats[1].score, 400);
 
   const denied = reduce(applied, { t: 'undo' }, { playerId: 'p2' });
@@ -253,10 +198,8 @@ test('undo: 房主撤销上一笔（按名字回滚）', () => {
 
 test('reset: 房主清空分数与历史，保留座位', () => {
   let s = seatAll(createRoom({ id: 'AB12CD', hostId: 'p1' }));
-  const proposed = reduce(s, {
-    t: 'propose', kind: 'settle', payload: { transactions: [{ from: 0, to: 1, amount: 700 }] },
-  }, { playerId: 'p1' });
-  s = reduce(proposed.state, { t: 'confirm', proposalId: proposed.state.proposals[0].id }, { playerId: 'p2' }).state;
+  s = reduce(s, { t: 'settle', to: 1, amount: 700 }, { playerId: 'p1' }).state;
+  
 
   const reset = reduce(s, { t: 'reset' }, { playerId: 'p1' });
   assert.equal(reset.ok, true);

@@ -5,11 +5,11 @@
  * 返回新状态 + 事件；Durable Object 只负责 socket / storage / 广播。
  * 这样核心规则可以像 js/guandan/rules.js 一样用 node --test 单测。
  *
- * 权限模型（提案-确认）：
- *  - 结算由任一"已入座"玩家发起 → 生成 proposal
- *  - 受影响座位（付款方 + 收款方）各自确认，发起人自己那份自动视为已确认
- *  - 全部确认后才真正落账
+ * 权限模型（各记各的）：
+ *  - 结算：只能记录「自己付给别人」，提交即生效，无需对方确认
  *  - 换庄 / 下一局 / 撤销 / 清空 / 换生肖：仅房主
+ *  - 房主还可以清任意座位（请离掉线玩家）
+  
  */
 import { randomCode } from './ids.js';
 
@@ -18,11 +18,8 @@ export const ZODIAC_COUNT = 12;
 export const MAX_NAME_LENGTH = 12;
 export const MAX_HISTORY = 500;
 export const MAX_TX_PER_PROPOSAL = 8;
-export const MAX_PENDING_PROPOSALS = 8;
 export const MAX_AMOUNT = 1_000_000_000;
-export const PROPOSAL_TTL_MS = 5 * 60 * 1000;
 
-const PROPOSAL_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
 
 /* ------------------------------------------------------------------ */
 /* 工具                                                                */
@@ -84,7 +81,6 @@ export function createRoom({
       : pickZodiacs(SEAT_COUNT, rng),
     seats: Array.from({ length: SEAT_COUNT }, (_, i) => emptySeat(i)),
     history: [],
-    proposals: [],
   };
 }
 
@@ -149,12 +145,6 @@ function applySettle(state, txs, now) {
     })),
   });
   if (state.history.length > MAX_HISTORY) state.history.length = MAX_HISTORY;
-}
-
-function cleanupProposals(state, now) {
-  const before = state.proposals.length;
-  state.proposals = state.proposals.filter((p) => now - p.createdAt <= PROPOSAL_TTL_MS);
-  return state.proposals.length !== before;
 }
 
 function syncStatus(state) {
@@ -269,76 +259,21 @@ export function reduce(prev, action, ctx = {}) {
       break;
     }
 
-    case 'propose': {
+    case 'settle': {
+      // 各记各的：只能记录「自己付给别人」，提交即生效，无需对方确认
       if (mySeat < 0) return fail('not_seated', '请先入座');
-      if (action.kind !== 'settle') return fail('bad_action', '未知的提案类型');
-      const txs = action.payload && action.payload.transactions;
-      const invalid = validateTransactions(txs);
+      const to = action.to;
+      const amount = Math.trunc(Number(action.amount));
+      const invalid = validateTransactions([{ from: mySeat, to, amount }]);
       if (invalid) return fail(invalid, '结算数据无效');
-
-      const affected = [...new Set(txs.flatMap((x) => [x.from, x.to]))].sort((a, b) => a - b);
-      const need = affected;
-      const have = need.includes(mySeat) ? [mySeat] : [];
-      const proposal = {
-        id: typeof action.proposalId === 'string' && action.proposalId
-          ? action.proposalId.slice(0, 24)
-          : randomCode(10, rng, PROPOSAL_ID_ALPHABET),
-        kind: 'settle',
-        payload: { transactions: txs.map((x) => ({ from: x.from, to: x.to, amount: x.amount })) },
-        need,
-        have,
-        by: mySeat,
-        byPlayerId: playerId,
-        createdAt: now,
-      };
-
-      if (have.length >= need.length) {
-        // 只需自己确认（理论上不会发生，因为 from !== to）——直接生效
-        applySettle(state, proposal.payload.transactions, now);
-        events.push({ type: 'settle_applied', transactions: proposal.payload.transactions, round: state.currentRound });
-      } else {
-        if (state.proposals.length >= MAX_PENDING_PROPOSALS) return fail('busy', '待确认操作过多，请稍后再试');
-        state.proposals.push(proposal);
-        events.push({ type: 'proposal_created', proposalId: proposal.id });
-      }
+      if (!state.seats[to].name) return fail('tx_invalid', '对方不在座位上');
+      const txs = [{ from: mySeat, to, amount }];
+      applySettle(state, txs, now);
+      events.push({ type: 'settle_applied', transactions: txs, round: state.currentRound });
       changed = true;
       break;
     }
-
-    case 'confirm': {
-      const idx = state.proposals.findIndex((p) => p.id === action.proposalId);
-      if (idx < 0) return fail('proposal_missing', '该操作已失效');
-      const p = state.proposals[idx];
-      if (mySeat < 0 || !p.need.includes(mySeat)) return fail('forbidden', '你不在此次结算的确认名单中');
-      if (!p.have.includes(mySeat)) {
-        p.have.push(mySeat);
-        changed = true;
-        events.push({ type: 'proposal_updated', proposalId: p.id });
-      }
-      if (p.have.length >= p.need.length) {
-        applySettle(state, p.payload.transactions, now);
-        state.proposals.splice(idx, 1);
-        changed = true;
-        events.push({
-          type: 'settle_applied',
-          transactions: p.payload.transactions,
-          round: state.currentRound,
-          affected: p.need.slice(),
-        });
-      }
-      break;
-    }
-
-    case 'reject': {
-      const idx = state.proposals.findIndex((p) => p.id === action.proposalId);
-      if (idx < 0) return fail('proposal_missing', '该操作已失效');
-      const p = state.proposals[idx];
-      if (!isHost && !(mySeat >= 0 && p.need.includes(mySeat))) return fail('forbidden', '无权拒绝');
-      state.proposals.splice(idx, 1);
-      changed = true;
-      events.push({ type: 'proposal_rejected', proposalId: p.id, by: mySeat });
-      break;
-    }
+  
 
     case 'advance': {
       if (!isHost) return fail('not_host', '只有房主可以换庄/下一局');
@@ -395,7 +330,6 @@ export function reduce(prev, action, ctx = {}) {
       state.dealerIndex = 0;
       state.dealerStreak = 0;
       state.history = [];
-      state.proposals = [];
       for (const s of state.seats) {
         s.score = 0;
         s.origin = 0;
@@ -409,7 +343,6 @@ export function reduce(prev, action, ctx = {}) {
       return fail('bad_action', `未知操作：${String(t)}`);
   }
 
-  if (cleanupProposals(state, now)) changed = true;
   syncStatus(state);
 
   if (changed) {

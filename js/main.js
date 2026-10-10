@@ -640,10 +640,12 @@ createApp({
         };
 
         const handleSeatClick = (index) => {
+            if (inRoom.value) return; // 房间模式：座位在大厅认领，不弹本地选人框
             if (dragState.value.dragging) return;
             activeSeatIndex.value = index;
             modals.value.seat = true;
         };
+  
 
 
         const addNewPlayer = () => {
@@ -671,10 +673,19 @@ createApp({
         // Settlement
         const openSettleModal = () => {
             if (activePlayers.value.length < 2) return alert('请先设置至少2名玩家');
-            settleFrom.value = null;
-            settleTo.value = null;
-            settleAmount.value = '';
-            selectingFrom.value = true;
+            if (inRoom.value) {
+                // 各记各的：付款方固定为自己
+                settleFrom.value = seats.value[mySeatIndex.value] || null;
+                settleTo.value = null;
+                settleAmount.value = '';
+                selectingFrom.value = false;
+            } else {
+                settleFrom.value = null;
+                settleTo.value = null;
+                settleAmount.value = '';
+                selectingFrom.value = true;
+            }
+  
             isSelecting.value = false; // 重置高亮状态
             errorFrom.value = false; // 重置错误状态
             errorTo.value = false; // 重置错误状态
@@ -688,12 +699,20 @@ createApp({
         };
 
         const selectSettlePlayer = (name) => {
+            if (inRoom.value) {
+                // 各记各的：付款方固定为自己，只能选收款方
+                if (name === settleFrom.value) return;
+                settleTo.value = name;
+                nextTick(() => amountInput.value?.focus());
+                isSelecting.value = false;
+                return;
+            }
             if (selectingFrom.value) {
                 if (settleTo.value === name) settleTo.value = null; // Swap prevention
                 settleFrom.value = name;
                 selectingFrom.value = false; // Auto advance
             } else {
-                if (settleFrom.value === name) settleFrom.value = null;
+                if (settleFrom.value === name) settleTo.value = null;
                 settleTo.value = name;
                 // Focus input
                 nextTick(() => amountInput.value?.focus());
@@ -701,6 +720,7 @@ createApp({
             // 选中玩家后，移除高亮
             isSelecting.value = false;
         };
+  
 
         const confirmSettle = () => {
             if (inRoom.value) {
@@ -711,12 +731,11 @@ createApp({
                     setTimeout(() => { errorFrom.value = false; errorTo.value = false; }, 2000);
                     return;
                 }
-                const fromIdx = seats.value.indexOf(settleFrom.value);
                 const toIdx = seats.value.indexOf(settleTo.value);
-                if (fromIdx < 0 || toIdx < 0) return;
-                ensureClient().proposeSettle([{ from: fromIdx, to: toIdx, amount }]);
+                if (toIdx < 0) return;
+                ensureClient().settle(toIdx, amount);
                 closeModal('settle');
-                showToast('已发起结算，等待受影响玩家确认');
+                showToast('已记录：' + settleFrom.value + ' → ' + settleTo.value + ' ' + amount);
                 return;
             }
             // 检查是否有未填写的字段
@@ -1145,7 +1164,7 @@ createApp({
 
         // Drag and Drop (Desktop)
         const handleDragStart = (index, event) => {
-            if (inRoom.value) return; // 房间模式下座位由各人认领，禁止拖动
+            if (inRoom.value && index !== mySeatIndex.value) return; // 房间模式：只能拖自己的座位
             const seat = seats.value[index];
             if (!seat) return;
             
@@ -1218,7 +1237,6 @@ createApp({
 
         const handleDrop = (toIndex, event) => {
             event.preventDefault();
-            if (inRoom.value) return;
 
             // Fix: If dragging "Next Round" button, do not process here and do not clear state.
             // The logic is handled in handleNextRoundDragEnd using the overIndex state.
@@ -1243,7 +1261,7 @@ createApp({
 
         // Touch Events (Mobile)
         const handleTouchStart = (index, event) => {
-            if (inRoom.value) return;
+            if (inRoom.value && index !== mySeatIndex.value) return; // 房间模式：只能拖自己的座位
             const seat = seats.value[index];
             if (!seat) return;
             
@@ -1346,8 +1364,8 @@ createApp({
 
         // Quick Settle Modal
         const openQuickSettle = (from, to) => {
-            settleFrom.value = from;
-            settleTo.value = to;
+            settleFrom.value = inRoom.value ? (seats.value[mySeatIndex.value] || from) : from;
+            settleTo.value = to === settleFrom.value ? null : to;
             settleAmount.value = '';
             selectingFrom.value = false; // Neither is selecting, we are ready to input
             isSelecting.value = false; // 通过拖拽打开时，不需要高亮
@@ -1769,28 +1787,11 @@ createApp({
             return (s && s.name) ? s.name : '';
         });
         const mySeatIndex = computed(() => roomYou.value.seatIndex);
-        const pendingAll = computed(() => (room.value ? room.value.proposals : []));
-        const pendingForMe = computed(() => {
-            const idx = mySeatIndex.value;
-            if (idx < 0) return [];
-            return pendingAll.value.filter(p => p.need.includes(idx) && !p.have.includes(idx));
-        });
-        const pendingOthers = computed(() => {
-            const mine = pendingForMe.value;
-            return pendingAll.value.filter(p => !mine.includes(p));
-        });
 
         const seatNameAt = (i) => {
             if (!room.value) return null;
             const s = room.value.seats[i];
             return s ? s.name : null;
-        };
-        const proposalText = (p) => {
-            const txs = (p.payload && p.payload.transactions) || [];
-            const text = txs
-                .map(t => (seatNameAt(t.from) || '?') + ' → ' + (seatNameAt(t.to) || '?') + ' ' + t.amount)
-                .join('，');
-            return text || '结算';
         };
 
         const showToast = (text, type = 'info') => {
@@ -1929,8 +1930,6 @@ createApp({
             }
         };
 
-        const confirmProposal = (id) => ensureClient().confirm(id);
-        const rejectProposal = (id) => ensureClient().reject(id);
 
         const hostReset = () => {
             if (!roomYou.value.isHost) return;
@@ -1984,8 +1983,8 @@ createApp({
             roomEnabled, inRoom, room, roomOnline, roomYou, roomStatus,
             lobbyName, lobbyCode, lobbyError, lobbyBusy, qrBox, shareLink, hostName,
             openLobby, doCreateRoom, doJoinRoom, leaveRoom, claimSeat, standUpSeat, hostClearSeat,
-            confirmProposal, rejectProposal, hostReset, copyShareLink, proposalText,
-            pendingForMe, pendingOthers, toast,
+            hostReset, copyShareLink,
+            toast,
         };
     }
 }).mount('#app');

@@ -299,7 +299,7 @@
                      { 'empty-seat': !seats[index] }
                  ]"
                  :style="{ '--scale-factor': globalScale, pointerEvents: isLocked ? 'none' : 'auto' }"
-                :draggable="!isLocked && !inRoom && seats[index] ? true : false"
+                :draggable="!isLocked && seats[index] && (!inRoom || roomYou.seatIndex === index) ? true : false"
                  @click="seats[index] ? handlePlayerCardClick(index) : handleSeatClick(index)"
                  @dragstart="handleDragStart(index, $event)"
                  @dragend="handleDragEnd"
@@ -359,22 +359,6 @@
             </button>
         </footer>
 
-        <!-- 房间：待我确认 -->
-        <div v-if="inRoom && pendingForMe.length" class="room-confirm-bar">
-            <div class="rcb-title"><i class="fas fa-hand-paper"></i> 待你确认（{{ pendingForMe.length }}）</div>
-            <div v-for="pr in pendingForMe" :key="pr.id" class="rcb-item">
-                <span class="rcb-text">{{ proposalText(pr) }}</span>
-                <div class="rcb-actions">
-                    <button class="btn btn-secondary btn-xs" @click="rejectProposal(pr.id)">拒绝</button>
-                    <button class="btn btn-primary btn-xs" @click="confirmProposal(pr.id)">确认</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- 房间：等待他人确认 -->
-        <div v-if="inRoom && !pendingForMe.length && pendingOthers.length" class="room-confirm-bar passive">
-            <i class="fas fa-hourglass-half"></i> 等待其他玩家确认（{{ pendingOthers.length }}）
-        </div>
 
         <!-- 提示 -->
         <transition name="toast">
@@ -385,6 +369,7 @@
         <!-- 1. 结算模态框 -->
         <div class="modal-overlay settle-modal-overlay" :class="{ show: modals.settle }" @click="closeModal('settle')">
             <div class="modal-card" @click.stop>
+                <button class="modal-close" type="button" @click="closeModal('settle')" aria-label="关闭">✕</button>
                 <div class="modal-title">结算分数</div>
                 
                 <div class="settle-grid">
@@ -392,9 +377,10 @@
                          :class="{ 
                              selected: settleFrom, 
                              highlighting: isSelecting && selectingFrom,
-                             error: errorFrom
+                             error: errorFrom,
+                             locked: inRoom
                          }" 
-                         @click="handleSelectBoxClick(true)">
+                         @click="!inRoom && handleSelectBoxClick(true)">
                         <span :class="{ 'placeholder-text': !settleFrom, 'player-name-text': settleFrom }">
                             {{ settleFrom || '谁给分数?' }}
                         </span>
@@ -454,6 +440,7 @@
         <!-- 2. 选人入座模态框 -->
         <div class="modal-overlay" :class="{ show: modals.seat }" @click="closeModal('seat')">
             <div class="modal-card" @click.stop>
+                <button class="modal-close" type="button" @click="closeModal('seat')" aria-label="关闭">✕</button>
                 <div class="modal-title">选择玩家入座</div>
                 <div class="input-field" style="display: flex; gap: 8px; padding: 4px; border: none; background: transparent;">
                     <input v-model="newPlayerName" class="input-field" placeholder="新玩家名字" style="margin: 0;" @keyup.enter="addNewPlayer">
@@ -479,6 +466,7 @@
         <!-- 3. 历史记录模态框 -->
         <div class="modal-overlay" :class="{ show: modals.history }" @click="closeModal('history')">
             <div class="modal-card" @click.stop>
+                <button class="modal-close" type="button" @click="closeModal('history')" aria-label="关闭">✕</button>
                 <div class="modal-title">历史记录</div>
                 <div v-if="history.length === 0" class="text-empty">暂无记录</div>
                 <div v-else style="max-height: 400px; overflow-y: auto;">
@@ -502,6 +490,7 @@
         <!-- 4. 统计图表模态框 -->
         <div class="modal-overlay" :class="{ show: modals.stats }" @click="closeModal('stats')">
             <div class="modal-card" style="max-width: 600px; width: 95%;" @click.stop>
+                <button class="modal-close" type="button" @click="closeModal('stats')" aria-label="关闭">✕</button>
                 <div class="modal-title">分数走势</div>
                 <div class="chart-container">
                     <canvas id="scoreChart"></canvas>
@@ -515,6 +504,7 @@
         <!-- 5. 设置模态框 -->
         <div class="modal-overlay" :class="{ show: modals.settings }" @click="closeModal('settings')">
             <div class="modal-card" @click.stop>
+                <button class="modal-close" type="button" @click="closeModal('settings')" aria-label="关闭">✕</button>
                 <div class="modal-title">设置</div>
 
                 <div class="list-item" style="flex-direction: column; align-items: stretch; gap: 8px; cursor: default;">
@@ -585,6 +575,7 @@
         <!-- 7. 设置原点模态框 -->
         <div class="modal-overlay" :class="{ show: modals.originSet }" @click="closeModal('originSet')">
             <div class="modal-card" @click.stop>
+                <button class="modal-close" type="button" @click="closeModal('originSet')" aria-label="关闭">✕</button>
                 <div class="modal-title">设置原点</div>
                 <div v-if="players.length === 0" class="text-empty-lg">
                     至少需要一个玩家
@@ -621,6 +612,7 @@
         <!-- 8. 操作说明模态框 -->
         <div class="modal-overlay help-modal" :class="{ show: modals.help }" @click="closeModal('help')">
             <div class="modal-card" @click.stop style="max-height: calc(100vh - 280px); display: flex; flex-direction: column;">
+                <button class="modal-close" type="button" @click="closeModal('help')" aria-label="关闭">✕</button>
                 <div class="modal-title" style="flex-shrink: 0;">操作说明</div>
                 <div class="help-section" style="flex: 1; overflow-y: auto; min-height: 0; padding: 12px; margin-bottom: 8px;">
                     <div class="help-body-text">
@@ -661,6 +653,7 @@
         <!-- 13. 联机房间（大厅） -->
         <div class="modal-overlay" :class="{ show: modals.room }" @click="closeModal('room')">
             <div class="modal-card room-card" @click.stop>
+                <button class="modal-close" type="button" @click="closeModal('room')" aria-label="关闭">✕</button>
                 <div class="modal-title">
                     <i class="fas fa-users"></i> 联机房间
                     <span v-if="inRoom" class="room-code-chip">{{ room.id }}</span>

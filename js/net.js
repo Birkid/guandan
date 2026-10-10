@@ -111,9 +111,9 @@ export class RoomClient {
   rename(name) { return this.send({ t: 'rename', name }); }
   standUp(seat) { return this.send({ t: 'standUp', seat }); }
   setOrigin(seat, origin) { return this.send({ t: 'setOrigin', seat, origin }); }
-  proposeSettle(transactions) { return this.send({ t: 'propose', kind: 'settle', payload: { transactions } }); }
-  confirm(proposalId) { return this.send({ t: 'confirm', proposalId }); }
-  reject(proposalId) { return this.send({ t: 'reject', proposalId }); }
+  // 各记各的：记录「自己付给对方多少」，提交即生效
+  settle(to, amount) { return this.send({ t: 'settle', to, amount }); }
+  
   advanceNext() { return this.send({ t: 'advance', kind: 'next' }); }
   advanceDealer(dealerIndex, { initial = false, bumpRound = false } = {}) {
     return this.send({ t: 'advance', kind: 'dealer', dealerIndex, initial, bumpRound });
